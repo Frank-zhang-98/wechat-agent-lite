@@ -1,0 +1,3984 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>wechat-agent-lite 控制台</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #fff;
+      --line: #dbe4ef;
+      --text: #12263a;
+      --muted: #5f7287;
+      --brand: #2563eb;
+      --ok: #0f766e;
+      --warn: #b45309;
+      --err: #b91c1c;
+    }
+    body {
+      margin: 0;
+      background: radial-gradient(circle at 20% 0%, #eaf1ff 0%, var(--bg) 34%);
+      font-family: "Microsoft YaHei", "PingFang SC", sans-serif;
+      color: var(--text);
+    }
+    .wrap { max-width: 1280px; margin: 24px auto; padding: 0 16px 24px; }
+    .title { margin: 0 0 10px; font-size: 30px; font-weight: 800; }
+    .small { font-size: 12px; color: var(--muted); }
+    .console-shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr);
+      gap: 20px;
+      align-items: start;
+      margin-top: 20px;
+    }
+    .module-sidebar {
+      grid-column: 1;
+      position: sticky;
+      top: 16px;
+    }
+    .module-nav {
+      display: grid;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid #d6e1f0;
+      border-radius: 22px;
+      background: rgba(255,255,255,.82);
+      box-shadow: 0 14px 32px rgba(15, 23, 42, .05);
+      backdrop-filter: blur(10px);
+    }
+    .module-nav-btn {
+      width: 100%;
+      display: grid;
+      gap: 4px;
+      justify-items: start;
+      text-align: left;
+      padding: 12px 14px;
+      border-radius: 16px;
+      border: 1px solid transparent;
+      background: transparent;
+      color: var(--text);
+    }
+    .module-nav-btn strong {
+      font-size: 14px;
+      font-weight: 800;
+    }
+    .module-nav-btn span {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .module-nav-btn:hover {
+      background: #f5f9ff;
+      border-color: #d8e5f7;
+    }
+    .module-nav-btn.active {
+      background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+      border-color: #2563eb;
+      box-shadow: 0 16px 28px rgba(37, 99, 235, .2);
+      color: #fff;
+    }
+    .module-nav-btn.active span {
+      color: rgba(255,255,255,.82);
+    }
+    .module-stage {
+      grid-column: 2;
+      display: grid;
+    }
+    .module-panel {
+      display: none;
+      min-height: 560px;
+      padding: 18px;
+      border-radius: 20px;
+    }
+    .module-panel.active {
+      display: block;
+      animation: fadePanel .22s ease;
+    }
+    @keyframes fadePanel {
+      from { opacity: 0; transform: translateY(8px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .grid { display: grid; grid-template-columns: repeat(12, 1fr); gap: 14px; }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 8px 22px rgba(26, 54, 93, .07);
+      padding: 14px;
+    }
+    .span-12 { grid-column: span 12; }
+    .span-8 { grid-column: span 8; }
+    .span-6 { grid-column: span 6; }
+    .span-4 { grid-column: span 4; }
+    .span-3 { grid-column: span 3; }
+    .span-2 { grid-column: span 2; }
+    .label { display: block; margin: 8px 0 4px; font-size: 12px; color: var(--muted); }
+    input, textarea, select {
+      width: 100%;
+      box-sizing: border-box;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 10px;
+      font-size: 14px;
+      background: #fff;
+    }
+    textarea { min-height: 72px; resize: vertical; }
+    .row { display: grid; grid-template-columns: repeat(12, 1fr); gap: 10px; }
+    .stack { display: grid; gap: 14px; }
+    .btns { display: flex; flex-wrap: wrap; gap: 8px; }
+    button {
+      background: var(--brand);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 9px 14px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .72;
+    }
+    button.secondary { background: #334155; }
+    button.warn { background: #9a3412; }
+    .feedback-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(15, 23, 42, .42);
+      backdrop-filter: blur(6px);
+      z-index: 1000;
+    }
+    .feedback-overlay.show {
+      display: flex;
+      animation: fadeIn .18s ease;
+    }
+    .feedback-dialog {
+      width: min(420px, 100%);
+      padding: 24px 22px 18px;
+      border-radius: 22px;
+      border: 1px solid rgba(191, 219, 254, .9);
+      background: linear-gradient(180deg, rgba(255,255,255,.98) 0%, rgba(239,246,255,.96) 100%);
+      box-shadow: 0 28px 60px rgba(15, 23, 42, .18);
+    }
+    .feedback-badge {
+      width: 52px;
+      height: 52px;
+      border-radius: 16px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: linear-gradient(135deg, #dcfce7 0%, #bbf7d0 100%);
+      color: #166534;
+      font-size: 26px;
+      font-weight: 800;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.7);
+    }
+    .feedback-title {
+      margin: 14px 0 6px;
+      font-size: 22px;
+      font-weight: 800;
+    }
+    .feedback-text {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.7;
+      font-size: 14px;
+    }
+    .feedback-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 18px;
+    }
+    .trigger-status {
+      margin-top: 14px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid #dbe4ef;
+      background: #f8fbff;
+      color: #27446a;
+      font-size: 13px;
+      line-height: 1.7;
+      display: none;
+    }
+    .trigger-status.show {
+      display: block;
+    }
+    .trigger-status.loading {
+      border-color: #bfdbfe;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
+    .trigger-status.success {
+      border-color: #a7f3d0;
+      background: #ecfdf5;
+      color: #0f766e;
+    }
+    .trigger-status.error {
+      border-color: #fecdd3;
+      background: #fff1f2;
+      color: #b91c1c;
+    }
+    .mail-test-status {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-radius: 14px;
+      border: 1px solid #dbe4ef;
+      background: #f8fbff;
+      color: #27446a;
+      font-size: 13px;
+      line-height: 1.7;
+      display: none;
+    }
+    .mail-test-status.show {
+      display: block;
+    }
+    .mail-test-status.loading {
+      border-color: #bfdbfe;
+      background: #eff6ff;
+      color: #1d4ed8;
+    }
+    .mail-test-status.success {
+      border-color: #a7f3d0;
+      background: #ecfdf5;
+      color: #0f766e;
+    }
+    .mail-test-status.error {
+      border-color: #fecdd3;
+      background: #fff1f2;
+      color: #b91c1c;
+    }
+    .trigger-progress-shell {
+      margin-top: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .trigger-progress-card {
+      border: 1px solid #d7e4f3;
+      border-radius: 18px;
+      padding: 14px;
+      background: linear-gradient(135deg, #ffffff 0%, #f6faff 55%, #eef5ff 100%);
+      box-shadow: 0 10px 24px rgba(37, 99, 235, .08);
+      display: grid;
+      gap: 12px;
+    }
+    .trigger-progress-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .trigger-progress-title {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.4;
+    }
+    .trigger-progress-sub {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .trigger-progress-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .trigger-progress-stat {
+      border-radius: 14px;
+      background: rgba(255,255,255,.82);
+      border: 1px solid #e0eaf8;
+      padding: 10px 12px;
+    }
+    .trigger-progress-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .trigger-progress-stat strong {
+      display: block;
+      color: #163b74;
+      font-size: 14px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .trigger-progress-bar {
+      position: relative;
+      width: 100%;
+      height: 10px;
+      border-radius: 999px;
+      overflow: hidden;
+      background: #dce8fb;
+    }
+    .trigger-progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%);
+      transition: width .25s ease;
+    }
+    .trigger-step-list {
+      display: grid;
+      gap: 8px;
+    }
+    .trigger-step-row {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      border-radius: 12px;
+      border: 1px solid #e3ebf8;
+      background: rgba(255,255,255,.88);
+      padding: 10px 12px;
+    }
+    .trigger-step-index {
+      width: 24px;
+      height: 24px;
+      border-radius: 999px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      background: #eef4ff;
+      color: #1e3a8a;
+    }
+    .trigger-step-name {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1e3a5f;
+      word-break: break-word;
+    }
+    .trigger-step-row.active {
+      border-color: #93c5fd;
+      background: linear-gradient(180deg, #ffffff 0%, #eef5ff 100%);
+      box-shadow: 0 8px 18px rgba(37, 99, 235, .10);
+    }
+    .trigger-step-row.done .trigger-step-index {
+      background: #e7f7f3;
+      color: #0f766e;
+    }
+    .trigger-step-row.fail .trigger-step-index {
+      background: #feeceb;
+      color: #b91c1c;
+    }
+    .trigger-progress-note {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; }
+      to { opacity: 1; }
+    }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px 6px; text-align: left; }
+    tbody tr:hover { background: #f8fbff; }
+    th.sortable {
+      padding: 0;
+    }
+    .th-sort {
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 6px;
+      border: none;
+      background: transparent;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 700;
+      cursor: pointer;
+      text-align: left;
+    }
+    .th-sort:hover {
+      color: #1d4ed8;
+    }
+    .th-sort.active {
+      color: #1d4ed8;
+    }
+    .sort-indicator {
+      font-size: 11px;
+      color: #94a3b8;
+      min-width: 10px;
+    }
+    .status-success { color: var(--ok); font-weight: 700; }
+    .status-failed { color: var(--err); font-weight: 700; }
+    .status-partial_success { color: var(--warn); font-weight: 700; }
+    .mono { font-family: Consolas, monospace; font-size: 12px; }
+    pre {
+      background: #0f172a;
+      color: #dbeafe;
+      border-radius: 10px;
+      padding: 12px;
+      overflow: auto;
+      max-height: 360px;
+    }
+    .model-groups {
+      display: grid;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .model-group {
+      border: 1px solid #d7e3f4;
+      border-radius: 16px;
+      padding: 14px;
+      background: linear-gradient(180deg, rgba(255,255,255,.98) 0%, rgba(244,248,255,.92) 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.72);
+    }
+    .model-group-head {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 12px;
+      position: relative;
+      width: fit-content;
+      max-width: 100%;
+    }
+    .model-group-title {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: .01em;
+    }
+    .info-dot {
+      width: 22px;
+      height: 22px;
+      border-radius: 999px;
+      border: 1px solid #bfd0ea;
+      background: #eff6ff;
+      color: #1d4ed8;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: help;
+      flex: 0 0 auto;
+    }
+    .info-dot:focus {
+      outline: 2px solid rgba(37, 99, 235, .25);
+      outline-offset: 2px;
+    }
+    .model-tooltip {
+      position: absolute;
+      left: 0;
+      top: calc(100% + 8px);
+      width: min(360px, calc(100vw - 64px));
+      padding: 10px 12px;
+      border-radius: 12px;
+      background: rgba(15, 23, 42, .96);
+      color: #e2e8f0;
+      font-size: 12px;
+      line-height: 1.6;
+      box-shadow: 0 14px 34px rgba(15, 23, 42, .24);
+      opacity: 0;
+      visibility: hidden;
+      transform: translateY(6px);
+      transition: opacity .18s ease, transform .18s ease, visibility .18s ease;
+      pointer-events: none;
+      z-index: 20;
+    }
+    .model-tooltip::before {
+      content: "";
+      position: absolute;
+      top: -6px;
+      left: 22px;
+      width: 12px;
+      height: 12px;
+      background: rgba(15, 23, 42, .96);
+      transform: rotate(45deg);
+      border-radius: 2px;
+    }
+    .model-group-head:hover .model-tooltip,
+    .model-group-head:focus-within .model-tooltip {
+      opacity: 1;
+      visibility: visible;
+      transform: translateY(0);
+    }
+    .model-fields {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      align-items: end;
+    }
+    .model-mode-block {
+      margin-top: 12px;
+    }
+    .model-mode-block[hidden] {
+      display: none !important;
+    }
+    .model-inline-hint {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .model-field .label {
+      margin-top: 0;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+    .metric-shell {
+      min-height: 148px;
+    }
+    .token-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .token-card {
+      border: 1px solid #d9e4f2;
+      border-radius: 14px;
+      padding: 12px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+      box-shadow: 0 10px 24px rgba(37, 99, 235, .06);
+    }
+    .token-card.featured {
+      border-color: #bfd3ff;
+      box-shadow: 0 14px 30px rgba(37, 99, 235, .12);
+    }
+    .token-card-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .token-card-title {
+      margin: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+    .token-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: #eaf2ff;
+      color: #2551b3;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .token-total {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .token-total strong {
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: -.03em;
+    }
+    .token-total span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .token-cost-total {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      margin-bottom: 10px;
+      padding: 10px 12px;
+      border-radius: 14px;
+      background: linear-gradient(180deg, #eff6ff 0%, #f8fbff 100%);
+      border: 1px solid #d8e6fb;
+    }
+    .token-cost-total strong {
+      font-size: 24px;
+      line-height: 1;
+      letter-spacing: -.03em;
+      color: #173f8a;
+    }
+    .token-cost-total span {
+      color: #4f6f9c;
+      font-size: 12px;
+    }
+    .token-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .token-stat {
+      border-radius: 12px;
+      background: #f3f7fd;
+      padding: 8px 10px;
+    }
+    .token-stat b {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 3px;
+    }
+    .token-stat span {
+      color: var(--muted);
+      font-size: 11px;
+    }
+    .token-roles {
+      display: grid;
+      gap: 8px;
+    }
+    .token-role {
+      display: grid;
+      gap: 5px;
+    }
+    .token-role-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: #27446a;
+    }
+    .token-role-head strong {
+      font-weight: 700;
+    }
+    .token-role-track {
+      width: 100%;
+      height: 8px;
+      overflow: hidden;
+      border-radius: 999px;
+      background: #e3edfb;
+    }
+    .token-role-fill {
+      height: 100%;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #2563eb 0%, #60a5fa 100%);
+    }
+    .token-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 112px;
+      border: 1px dashed #d8e3f2;
+      border-radius: 14px;
+      color: var(--muted);
+      font-size: 13px;
+      background: linear-gradient(180deg, #fbfdff 0%, #f5f8fc 100%);
+    }
+    .token-models {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .token-model-row {
+      border-radius: 12px;
+      border: 1px solid #d9e6f7;
+      background: #fbfdff;
+      padding: 10px 12px;
+    }
+    .token-model-head {
+      display: flex;
+      align-items: baseline;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 4px;
+    }
+    .token-model-head strong {
+      font-size: 13px;
+      color: #163b74;
+      word-break: break-all;
+    }
+    .token-model-cost {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1d4ed8;
+      white-space: nowrap;
+    }
+    .token-model-sub {
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .token-warning-note {
+      margin-top: 10px;
+      padding: 9px 10px;
+      border-radius: 12px;
+      background: #fff7ed;
+      color: #9a3412;
+      font-size: 12px;
+      line-height: 1.6;
+      border: 1px solid #fed7aa;
+    }
+    .storage-panel {
+      display: grid;
+      grid-template-columns: 132px minmax(0, 1fr);
+      gap: 14px;
+      align-items: center;
+      margin-top: 12px;
+    }
+    .storage-ring {
+      --size: 132px;
+      --thickness: 12px;
+      --pct: 0;
+      width: var(--size);
+      height: var(--size);
+      border-radius: 50%;
+      background: conic-gradient(#2563eb calc(var(--pct) * 1%), #dce8fb 0);
+      position: relative;
+      display: grid;
+      place-items: center;
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.7), 0 14px 28px rgba(37, 99, 235, .12);
+    }
+    .storage-ring::before {
+      content: "";
+      position: absolute;
+      inset: var(--thickness);
+      border-radius: 50%;
+      background: linear-gradient(180deg, #ffffff 0%, #f4f8ff 100%);
+    }
+    .storage-ring-center {
+      position: relative;
+      z-index: 1;
+      text-align: center;
+    }
+    .storage-ring-center strong {
+      display: block;
+      font-size: 28px;
+      line-height: 1;
+      letter-spacing: -.03em;
+    }
+    .storage-ring-center span {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .storage-meta {
+      display: grid;
+      gap: 10px;
+    }
+    .storage-meta-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid #e7eef8;
+      padding-bottom: 8px;
+      font-size: 13px;
+    }
+    .storage-meta-item:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .storage-meta-item span:first-child {
+      color: var(--muted);
+    }
+    .storage-inline-note {
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .table-tools {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 180px 180px 200px;
+      gap: 10px;
+      margin: 12px 0 10px;
+    }
+    .table-tools input,
+    .table-tools select {
+      background: #fbfdff;
+    }
+    .table-quick-filters {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 0 0 10px;
+    }
+    .filter-chip {
+      border: 1px solid #d8e5f7;
+      border-radius: 999px;
+      padding: 7px 12px;
+      background: #f8fbff;
+      color: #365073;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all .18s ease;
+    }
+    .filter-chip.active {
+      background: #2563eb;
+      border-color: #2563eb;
+      color: #fff;
+      box-shadow: 0 8px 20px rgba(37, 99, 235, .18);
+    }
+    .table-meta {
+      margin-bottom: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .schedule-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .schedule-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .schedule-input {
+      display: grid;
+      gap: 6px;
+      padding: 12px;
+      border: 1px solid #dce7f5;
+      border-radius: 16px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+    }
+    .schedule-input .label {
+      margin: 0;
+    }
+    .schedule-hint {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .table-scroll {
+      border: 1px solid #dce7f5;
+      border-radius: 16px;
+      overflow: auto;
+      max-height: 438px;
+      background: linear-gradient(180deg, #ffffff 0%, #fbfdff 100%);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.68);
+    }
+    .table-scroll table {
+      min-width: 760px;
+      margin: 0;
+    }
+    .table-scroll thead th {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: #f7faff;
+      box-shadow: inset 0 -1px 0 #dce7f5;
+    }
+    .table-scroll tbody tr:last-child td {
+      border-bottom: none;
+    }
+    .table-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .pager {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .pager button[disabled] {
+      cursor: not-allowed;
+      opacity: .45;
+    }
+    .pager-info {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .runs-detail-cell {
+      text-align: center;
+      white-space: nowrap;
+    }
+    .runs-reason-cell {
+      max-width: 280px;
+      color: #4f627e;
+      font-size: 12px;
+      line-height: 1.55;
+    }
+    .runs-reason-text {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
+    }
+    .runs-detail-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 52px;
+      white-space: nowrap;
+      word-break: keep-all;
+      writing-mode: horizontal-tb;
+      line-height: 1;
+      padding: 10px 14px;
+    }
+    .status-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 5px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .status-chip.status-success { background: #e7f7f3; color: #0f766e; }
+    .status-chip.status-failed { background: #feeceb; color: #b91c1c; }
+    .status-chip.status-partial_success { background: #fff3e6; color: #b45309; }
+    .status-chip.status-running { background: #e8f0ff; color: #1d4ed8; }
+    .status-chip.status-pending { background: #eef2f7; color: #475569; }
+    .score-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: #edf5ff;
+      color: #1e3a8a;
+      font-weight: 700;
+      font-size: 11px;
+    }
+    .detail-shell {
+      min-height: 180px;
+      margin-top: 12px;
+    }
+    .detail-empty {
+      display: grid;
+      place-items: center;
+      min-height: 168px;
+      border: 1px dashed #d8e3f2;
+      border-radius: 16px;
+      background: linear-gradient(180deg, #fbfdff 0%, #f4f8fe 100%);
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .run-detail {
+      display: grid;
+      gap: 18px;
+    }
+    .run-hero {
+      border: 1px solid #d7e4f3;
+      border-radius: 22px;
+      padding: 18px;
+      background: linear-gradient(135deg, #ffffff 0%, #f5f9ff 55%, #eef4ff 100%);
+      box-shadow: 0 12px 28px rgba(37, 99, 235, .08);
+    }
+    .run-hero-top {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px;
+      align-items: start;
+      margin-bottom: 14px;
+    }
+    .run-hero-main {
+      min-width: 0;
+      display: grid;
+      gap: 6px;
+    }
+    .run-hero-title {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.35;
+      letter-spacing: -.02em;
+    }
+    .run-hero-sub {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+    .run-badges {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+      align-content: flex-start;
+      max-width: 240px;
+    }
+    .detail-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #eaf2ff;
+      color: #2551b3;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .detail-badge.status-success { background: #e7f7f3; color: #0f766e; }
+    .detail-badge.status-failed { background: #feeceb; color: #b91c1c; }
+    .detail-badge.status-partial_success { background: #fff3e6; color: #b45309; }
+    .detail-badge.status-running { background: #e8f0ff; color: #1d4ed8; }
+    .detail-badge.status-pending { background: #eef2f7; color: #475569; }
+    .run-meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 10px;
+    }
+    .run-meta-card {
+      border-radius: 16px;
+      background: rgba(255,255,255,.78);
+      border: 1px solid #e0eaf8;
+      padding: 12px 14px;
+    }
+    .run-meta-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .run-meta-card strong {
+      display: block;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+    .run-side {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+      align-self: start;
+      position: sticky;
+      top: 18px;
+      min-width: 0;
+      width: 100%;
+    }
+    .run-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(0, .78fr);
+      gap: 18px;
+      align-items: start;
+      min-width: 0;
+    }
+    .detail-card {
+      border: 1px solid #dbe6f3;
+      border-radius: 18px;
+      padding: 16px;
+      background: #fff;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, .04);
+      display: grid;
+      align-content: start;
+      gap: 12px;
+      min-width: 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .detail-card h4 {
+      margin: 0;
+      font-size: 15px;
+    }
+    .detail-keyvals {
+      display: grid;
+      gap: 0;
+    }
+    .detail-kv {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      border-bottom: 1px solid #edf2f9;
+      padding: 10px 0;
+      font-size: 13px;
+    }
+    .detail-kv:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .detail-kv span:first-child {
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .detail-kv span:last-child,
+    .detail-kv strong {
+      text-align: right;
+      word-break: break-word;
+    }
+    .steps-list {
+      display: grid;
+      gap: 10px;
+      position: relative;
+      padding-left: 20px;
+    }
+    .steps-list::before {
+      content: "";
+      position: absolute;
+      left: 7px;
+      top: 8px;
+      bottom: 8px;
+      width: 2px;
+      background: linear-gradient(180deg, #bfdbfe 0%, #dbeafe 100%);
+    }
+    .step-item {
+      position: relative;
+      border: 1px solid #e4ebf6;
+      border-radius: 14px;
+      padding: 12px;
+      background: linear-gradient(180deg, #ffffff 0%, #f9fbff 100%);
+      scroll-margin-top: 18px;
+    }
+    .step-item::before {
+      content: "";
+      position: absolute;
+      left: -19px;
+      top: 16px;
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: #94a3b8;
+      box-shadow: 0 0 0 4px #eff6ff;
+    }
+    .step-item.status-success::before { background: #0f766e; }
+    .step-item.status-failed::before { background: #b91c1c; }
+    .step-item.status-partial_success::before { background: #b45309; }
+    .step-item.status-running::before { background: #2563eb; }
+    .step-item.status-pending::before { background: #64748b; }
+    .step-item.current-step {
+      border-color: #93c5fd;
+      box-shadow: 0 14px 28px rgba(37, 99, 235, .12);
+      background: linear-gradient(180deg, #ffffff 0%, #eef5ff 100%);
+    }
+    .step-item.current-step::after {
+      content: "当前步骤";
+      position: absolute;
+      top: -10px;
+      right: 12px;
+      border-radius: 999px;
+      background: #2563eb;
+      color: #fff;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 8px;
+      letter-spacing: .03em;
+    }
+    .step-tools {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .step-tool-label {
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .step-jump {
+      border: 1px solid #d7e4f7;
+      border-radius: 999px;
+      background: #f8fbff;
+      color: #365073;
+      padding: 6px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .step-jump.warn {
+      border-color: #fdc7c7;
+      background: #fff1f2;
+      color: #b91c1c;
+    }
+    .step-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .step-title {
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .step-meta {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .step-meta span b {
+      display: block;
+      margin-bottom: 3px;
+      color: var(--text);
+      font-size: 13px;
+      font-weight: 600;
+    }
+    .step-error {
+      margin-top: 10px;
+      border-radius: 12px;
+      background: #fff1f2;
+      border: 1px solid #fecdd3;
+      color: #9f1239;
+      padding: 10px 12px;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .step-collapse {
+      margin-top: 12px;
+      border: 1px solid #dce7f5;
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .step-collapse summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      background: #f8fbff;
+      color: #27446a;
+      font-size: 12px;
+      font-weight: 700;
+      border-bottom: 1px solid transparent;
+    }
+    .step-collapse summary::-webkit-details-marker {
+      display: none;
+    }
+    .step-collapse[open] summary {
+      border-bottom-color: #e7eef8;
+    }
+    .step-collapse-label {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .step-collapse-label::before {
+      content: "▸";
+      color: #4f6f9c;
+      transition: transform .18s ease;
+    }
+    .step-collapse[open] .step-collapse-label::before {
+      transform: rotate(90deg);
+    }
+    .step-collapse-state {
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+    .step-collapse-body {
+      padding: 0 12px 12px;
+      background: #fff;
+    }
+    .step-insight {
+      margin-top: 12px;
+      border: 1px solid #e5edf8;
+      border-radius: 14px;
+      background: #f8fbff;
+      padding: 12px;
+      display: grid;
+      gap: 10px;
+    }
+    .step-headline {
+      font-size: 13px;
+      font-weight: 700;
+      color: #1e3a5f;
+      line-height: 1.6;
+    }
+    .step-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .step-detail-item {
+      border-radius: 12px;
+      border: 1px solid #e1eaf7;
+      background: rgba(255,255,255,.92);
+      padding: 10px;
+    }
+    .step-detail-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .step-detail-item strong {
+      display: block;
+      font-size: 13px;
+      line-height: 1.5;
+      word-break: break-word;
+    }
+    .timeout-chip-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 2px;
+    }
+    .timeout-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      padding: 6px 10px;
+      background: #eef4ff;
+      color: #27446a;
+      font-size: 11px;
+      font-weight: 700;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .timeout-chip.tier-low {
+      background: #eef4ff;
+      color: #27446a;
+    }
+    .timeout-chip.tier-medium {
+      background: #e0f2fe;
+      color: #0c4a6e;
+    }
+    .timeout-chip.tier-high {
+      background: #fff7ed;
+      color: #9a3412;
+    }
+    .timeout-chip.tier-xhigh {
+      background: #fff1f2;
+      color: #9f1239;
+    }
+    .timeout-chip.tier-rule {
+      background: #f1f5f9;
+      color: #475569;
+    }
+    .step-detail-items {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding-left: 18px;
+      color: #365073;
+      font-size: 12px;
+      line-height: 1.6;
+    }
+    .step-audit-group {
+      display: grid;
+      gap: 10px;
+    }
+    .step-audit-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      font-size: 12px;
+      font-weight: 800;
+      color: #183b63;
+    }
+    .step-audit-title span:last-child {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .step-audit-list {
+      display: grid;
+      gap: 10px;
+    }
+    .step-audit-card {
+      border: 1px solid #dce7f5;
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .step-audit-card summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      background: #f9fbff;
+      border-bottom: 1px solid #e7eef8;
+    }
+    .step-audit-card summary::-webkit-details-marker {
+      display: none;
+    }
+    .step-audit-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: #27446a;
+    }
+    .step-audit-meta {
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .step-audit-body {
+      margin: 0;
+      padding: 12px;
+      background: #0f172a;
+      color: #dbeafe;
+      font-size: 12px;
+      line-height: 1.65;
+      overflow: auto;
+      max-height: 320px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .step-detail-panel {
+      margin-top: 10px;
+      border: 1px solid #dce7f5;
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+    }
+    .step-detail-panel summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 10px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #27446a;
+      background: #f8fbff;
+      border-bottom: 1px solid #e7eef8;
+    }
+    .step-detail-panel summary::-webkit-details-marker {
+      display: none;
+    }
+    .step-detail-raw {
+      padding: 12px;
+      background: #0f172a;
+      color: #dbeafe;
+      font-size: 12px;
+      line-height: 1.6;
+      overflow: auto;
+      max-height: 260px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .detail-json {
+      border: 1px solid #dce6f4;
+      border-radius: 18px;
+      background: #fff;
+      overflow: hidden;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, .04);
+      min-width: 0;
+      width: 100%;
+      box-sizing: border-box;
+    }
+    .detail-json summary {
+      cursor: pointer;
+      list-style: none;
+      padding: 14px 16px;
+      font-size: 14px;
+      font-weight: 700;
+      border-bottom: 1px solid #e8eef7;
+    }
+    .detail-json summary::-webkit-details-marker {
+      display: none;
+    }
+    .detail-json pre {
+      margin: 0;
+      border-radius: 0 0 14px 14px;
+      max-height: 320px;
+    }
+    .summary-sections {
+      display: grid;
+      gap: 12px;
+      min-width: 0;
+    }
+    .summary-block {
+      border: 1px solid #e7edf7;
+      border-radius: 14px;
+      padding: 12px;
+      background: linear-gradient(180deg, #ffffff 0%, #fafcff 100%);
+      min-width: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+    }
+    .summary-block h5 {
+      margin: 0 0 10px;
+      font-size: 13px;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .summary-list {
+      display: grid;
+      gap: 10px;
+      min-width: 0;
+    }
+    .summary-list.compact {
+      max-height: 420px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+    .summary-list.compact .summary-item-title {
+      align-items: center;
+    }
+    .summary-block-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 10px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .summary-block-head h5 {
+      margin: 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+    }
+    .summary-count {
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #27446a;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .summary-item {
+      border-top: 1px solid #edf2f9;
+      padding-top: 10px;
+      min-width: 0;
+    }
+    .summary-item:first-child {
+      border-top: none;
+      padding-top: 0;
+    }
+    .summary-item-title {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 4px;
+      font-size: 13px;
+      font-weight: 700;
+      min-width: 0;
+    }
+    .summary-item-title > span:first-child {
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .summary-item-sub {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .summary-link {
+      color: #2563eb;
+      text-decoration: none;
+    }
+    .summary-link:hover {
+      text-decoration: underline;
+    }
+    .summary-kv-grid {
+      display: grid;
+      gap: 8px;
+      min-width: 0;
+    }
+    .summary-mini-kv {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+      gap: 12px;
+      font-size: 12px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid #eef3f9;
+      min-width: 0;
+    }
+    .summary-mini-kv:last-child {
+      border-bottom: none;
+      padding-bottom: 0;
+    }
+    .summary-mini-kv span:first-child {
+      color: var(--muted);
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .summary-mini-kv strong {
+      min-width: 0;
+      text-align: right;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .summary-tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      min-width: 0;
+    }
+    .summary-tag {
+      border-radius: 999px;
+      background: #eef4ff;
+      color: #27446a;
+      padding: 5px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      max-width: 100%;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .content-view-grid {
+      display: grid;
+      grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr);
+      gap: 18px;
+      align-items: start;
+    }
+    .cover-viewer {
+      display: grid;
+      gap: 12px;
+    }
+    .cover-frame {
+      border: 1px solid #dbe6f3;
+      border-radius: 18px;
+      overflow: hidden;
+      background: linear-gradient(180deg, #ffffff 0%, #f7fbff 100%);
+      box-shadow: 0 8px 22px rgba(15, 23, 42, .04);
+      min-height: 220px;
+      display: grid;
+      place-items: center;
+    }
+    .cover-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+      object-fit: contain;
+      background: #fff;
+    }
+    .article-viewer {
+      display: grid;
+      gap: 12px;
+    }
+    .article-markdown {
+      margin: 0;
+      border-radius: 18px;
+      border: 1px solid #dbe6f3;
+      background: #fff;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, .04);
+      padding: 16px;
+      max-height: 720px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+      line-height: 1.7;
+      color: #1f2f46;
+      font-size: 13px;
+    }
+    .source-health-grid {
+      display: grid;
+      gap: 14px;
+    }
+    .source-health-cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .source-health-card {
+      border: 1px solid #dbe6f3;
+      border-radius: 16px;
+      background: linear-gradient(180deg, #ffffff 0%, #f8fbff 100%);
+      padding: 14px;
+      box-shadow: 0 8px 22px rgba(15, 23, 42, .04);
+    }
+    .source-health-card span {
+      display: block;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 6px;
+    }
+    .source-health-card strong {
+      font-size: 20px;
+      color: #173355;
+    }
+    .source-live-banner {
+      border: 1px solid #cfe0ff;
+      border-radius: 16px;
+      background: linear-gradient(135deg, #eef5ff 0%, #ffffff 100%);
+      padding: 14px;
+      display: grid;
+      gap: 8px;
+    }
+    .source-live-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      flex-wrap: wrap;
+    }
+    .source-live-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #1a365d;
+    }
+    .source-live-meta {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .source-live-stat {
+      border-radius: 12px;
+      background: rgba(255,255,255,.88);
+      padding: 10px 12px;
+      border: 1px solid #dbe6f3;
+    }
+    .source-live-stat span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      margin-bottom: 4px;
+    }
+    .source-live-stat strong {
+      color: #173355;
+      font-size: 13px;
+    }
+    .source-health-table td {
+      vertical-align: top;
+    }
+    .source-health-name {
+      font-weight: 700;
+      color: #173355;
+      margin-bottom: 4px;
+    }
+    .source-health-sub {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.6;
+      word-break: break-word;
+    }
+    .status-ok,
+    .status-updated_url,
+    .status-switch_to_html_list,
+    .status-recovered {
+      background: #e8f7ef;
+      color: #156c3f;
+    }
+    .status-manual_review,
+    .status-unknown {
+      background: #fff7df;
+      color: #8a5a00;
+    }
+    .status-http_404,
+    .status-http_410,
+    .status-http_403,
+    .status-http_429,
+    .status-http_5xx {
+      background: #fdecec;
+      color: #9f1239;
+    }
+    @media (max-width: 1280px) {
+      .run-grid {
+        grid-template-columns: 1fr;
+      }
+      .run-side {
+        position: static;
+      }
+      .content-view-grid {
+        grid-template-columns: 1fr;
+      }
+      .source-health-cards,
+      .source-live-meta {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 1080px) {
+      .console-shell {
+        grid-template-columns: 1fr;
+      }
+      .module-sidebar,
+      .module-stage {
+        grid-column: auto;
+      }
+      .module-sidebar {
+        position: static;
+      }
+      .module-nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .table-tools {
+        grid-template-columns: 1fr;
+      }
+      .schedule-row {
+        grid-template-columns: 1fr;
+      }
+      .table-scroll {
+        max-height: 400px;
+      }
+      .table-footer {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .model-fields {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .storage-panel {
+        grid-template-columns: 1fr;
+        justify-items: center;
+      }
+      .storage-meta {
+        width: 100%;
+      }
+      .run-meta-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .trigger-progress-meta {
+        grid-template-columns: 1fr;
+      }
+    }
+    @media (max-width: 980px) {
+      .module-nav {
+        grid-template-columns: 1fr;
+      }
+      .span-12,.span-8,.span-6,.span-4,.span-3,.span-2 { grid-column: span 12; }
+      .model-fields {
+        grid-template-columns: 1fr;
+      }
+      .model-tooltip {
+        width: min(320px, calc(100vw - 48px));
+      }
+      .token-grid,
+      .token-stats {
+        grid-template-columns: 1fr;
+      }
+      .run-hero-top {
+        grid-template-columns: 1fr;
+      }
+      .step-head {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+      .run-badges {
+        justify-content: flex-start;
+        max-width: none;
+      }
+      .run-meta-grid,
+      .step-meta {
+        grid-template-columns: 1fr;
+      }
+      .step-detail-grid {
+        grid-template-columns: 1fr;
+      }
+      .module-panel {
+        min-height: auto;
+      }
+      .source-health-cards,
+      .source-live-meta {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1 class="title">wechat-agent-lite 控制台</h1>
+    <p class="small">当前模式：SSH 隧道访问。建议通过 <span class="mono">http://127.0.0.1:18080</span> 访问控制台。</p>
+
+    <div class="console-shell">
+      <aside class="module-sidebar">
+        <nav class="module-nav" aria-label="控制台模块">
+          <button type="button" class="module-nav-btn active" id="nav-module-trigger" onclick="setActiveModule('module-trigger')"><strong>任务触发</strong><span>手动执行健康检查与主任务</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-token" onclick="setActiveModule('module-token')"><strong>Token 概览</strong><span>只统计真实模型调用</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-storage" onclick="setActiveModule('module-storage')"><strong>存储概览</strong><span>查看项目与系统磁盘占用</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-runs" onclick="setActiveModule('module-runs')"><strong>最近任务</strong><span>筛选、排序并定位任务记录</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-sources" onclick="setActiveModule('module-sources')"><strong>抓取源状态</strong><span>查看各个源当前健康状态与维护进度</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-schedule" onclick="setActiveModule('module-schedule')"><strong>调度与质量</strong><span>Cron、TopN/TopK 与阈值配置</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-models" onclick="setActiveModule('module-models')"><strong>模型配置</strong><span>各类模型的独立 API 配置</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-wechat" onclick="setActiveModule('module-wechat')"><strong>微信公众号配置</strong><span>公众号发布相关参数</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-smtp" onclick="setActiveModule('module-smtp')"><strong>SMTP 与日报配置</strong><span>日报发送与邮件出口配置</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-proxy" onclick="setActiveModule('module-proxy')"><strong>代理配置</strong><span>Xray、VLESS 与代理解析</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-actions" onclick="setActiveModule('module-actions')"><strong>任务动作</strong><span>针对指定 Run 执行重跑与补救</span></button>
+          <button type="button" class="module-nav-btn" id="nav-module-detail" onclick="setActiveModule('module-detail')"><strong>任务详情</strong><span>查看当前任务步骤与业务摘要</span></button>
+        </nav>
+      </aside>
+
+      <main class="module-stage">
+        <section id="module-trigger" class="card module-panel active">
+          <h3>任务触发</h3>
+          <p class="small">在这里手动执行健康检查或主任务，适合首次部署后的联调与回归测试。</p>
+          <div class="btns">
+            <button id="triggerHealthBtn" onclick="triggerRun('health', this)">执行 08:30 健康检查</button>
+            <button id="triggerMainBtn" class="secondary" onclick="triggerRun('main', this)">执行 09:00 主任务</button>
+          </div>
+          <div id="triggerStatus" class="trigger-status" aria-live="polite"></div>
+          <div id="triggerProgress" class="trigger-progress-shell"></div>
+          <p class="small">任务失败时，失败步骤和错误信息会显示在“任务详情”模块中。</p>
+        </section>
+
+        <section id="module-token" class="card module-panel">
+          <h3>Token 概览</h3>
+          <p class="small">只统计真实模型调用。未配置模型时，即使存在本地 mock 流程，也不会把估算值伪装成真实 Token 数据。</p>
+          <div class="btns" style="margin-top:10px; margin-bottom:10px">
+            <button type="button" class="secondary" onclick="syncPricingNow()">立即同步官方价格</button>
+            <span id="pricingSyncStatus" class="small" style="align-self:center">价格同步状态加载中...</span>
+          </div>
+          <div id="tokenSummary" class="metric-shell">加载中...</div>
+        </section>
+
+        <section id="module-storage" class="card module-panel">
+          <h3>存储概览</h3>
+          <p class="small">用圆环展示项目空间占用，并补充目录拆分与系统磁盘状态。</p>
+          <div id="storageSummary" class="metric-shell">加载中...</div>
+        </section>
+
+        <section id="module-runs" class="card module-panel">
+          <h3>最近任务</h3>
+          <div class="table-quick-filters">
+            <button id="quickFilterAll" class="filter-chip active" type="button" onclick="setRunsQuickFilter('all')">全部任务</button>
+            <button id="quickFilterIssues" class="filter-chip" type="button" onclick="setRunsQuickFilter('issues')">只看异常</button>
+            <button id="quickFilterSuccess" class="filter-chip" type="button" onclick="setRunsQuickFilter('success')">只看成功</button>
+            <button id="quickFilterHealth" class="filter-chip" type="button" onclick="setRunsQuickFilter('health')">健康检查</button>
+          </div>
+          <div class="table-tools">
+            <input id="runsKeywordFilter" placeholder="搜索标题、run_id 或失败步骤" />
+            <select id="runsStatusFilter">
+              <option value="">全部状态</option>
+              <option value="success">成功</option>
+              <option value="partial_success">部分成功</option>
+              <option value="failed">失败</option>
+              <option value="running">运行中</option>
+              <option value="pending">等待中</option>
+            </select>
+            <select id="runsTypeFilter">
+              <option value="">全部类型</option>
+              <option value="main">主任务</option>
+              <option value="health">健康检查</option>
+              <option value="manual">手动任务</option>
+            </select>
+            <select id="runsSortOrder">
+              <option value="time_desc">按时间：最新优先</option>
+              <option value="time_asc">按时间：最早优先</option>
+              <option value="score_desc">按质量分：高到低</option>
+              <option value="score_asc">按质量分：低到高</option>
+              <option value="title_asc">按标题：A 到 Z</option>
+              <option value="title_desc">按标题：Z 到 A</option>
+              <option value="status_priority">按状态：异常优先</option>
+              <option value="status_reverse">按状态：正常优先</option>
+            </select>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead>
+                <tr>
+                  <th class="sortable"><button type="button" class="th-sort" id="sortStartedAt" onclick="toggleRunsSort('started_at')">时间 <span class="sort-indicator" id="sortStartedAtIcon">-</span></button></th>
+                  <th class="sortable"><button type="button" class="th-sort" id="sortStatus" onclick="toggleRunsSort('status')">状态 <span class="sort-indicator" id="sortStatusIcon">-</span></button></th>
+                  <th>失败步骤</th>
+                  <th class="sortable"><button type="button" class="th-sort" id="sortQuality" onclick="toggleRunsSort('quality_score')">质量分 <span class="sort-indicator" id="sortQualityIcon">-</span></button></th>
+                  <th class="sortable"><button type="button" class="th-sort" id="sortTitle" onclick="toggleRunsSort('article_title')">文章标题 <span class="sort-indicator" id="sortTitleIcon">-</span></button></th>
+                  <th>选题理由</th>
+                  <th>详情</th>
+                </tr>
+              </thead>
+              <tbody id="runsBody"></tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <div id="runsMeta" class="table-meta">最近 20 条任务记录</div>
+            <div class="pager">
+              <button id="runsPrevPage" type="button" class="secondary" onclick="changeRunsPage(-1)">上一页</button>
+              <span id="runsPageInfo" class="pager-info">第 1 / 1 页</span>
+              <button id="runsNextPage" type="button" onclick="changeRunsPage(1)">下一页</button>
+            </div>
+          </div>
+        </section>
+
+        <section id="module-sources" class="card module-panel">
+          <h3>抓取源状态</h3>
+          <p class="small">展示每个抓取源的启用状态、最近检查结果、连续失败次数，以及当前 SOURCE_MAINTENANCE 正在处理到哪个源。</p>
+          <div id="sourceHealthSummary" class="metric-shell">加载中...</div>
+        </section>
+
+        <section id="module-schedule" class="card module-panel">
+          <h3>调度与质量</h3>
+          <p class="small">前两个时间直接选择即可，系统会在保存时自动转换成 Cron。后面的参数用于控制选题数量和质量门槛。</p>
+          <div class="schedule-grid">
+            <div class="schedule-row">
+              <div class="schedule-input">
+                <label class="label" for="healthCron">健康检查时间</label>
+                <input id="healthCron" type="time" step="60" />
+                <div class="schedule-hint">每天自动执行一次健康检查。</div>
+              </div>
+              <div class="schedule-input">
+                <label class="label" for="mainCron">主任务时间</label>
+                <input id="mainCron" type="time" step="60" />
+                <div class="schedule-hint">每天自动执行一次主流程任务。</div>
+              </div>
+            </div>
+            <div class="schedule-row">
+              <div class="schedule-input">
+                <label class="label" for="topN">TopN</label>
+                <input id="topN" type="number" min="1" step="1" placeholder="10" />
+                <div class="schedule-hint">规则打分后保留的候选主题数量。</div>
+              </div>
+              <div class="schedule-input">
+                <label class="label" for="topK">TopK</label>
+                <input id="topK" type="number" min="1" step="1" placeholder="8" />
+                <div class="schedule-hint">进入二次重排的候选主题数量。</div>
+              </div>
+            </div>
+            <div class="schedule-input">
+              <label class="label" for="qualityThreshold">质量阈值</label>
+              <input id="qualityThreshold" type="number" min="0" max="100" step="0.1" placeholder="78" />
+              <div class="schedule-hint">文章质检达到该分数后才视为通过；否则会继续优化或走兜底策略。</div>
+            </div>
+          </div>
+          <div class="btns" style="margin-top:10px">
+            <button onclick="saveScheduling()">保存调度配置</button>
+          </div>
+        </section>
+
+        <section id="module-models" class="card module-panel">
+          <h3>模型配置（每个模型独立 API）</h3>
+          <p class="small">按模型职责拆分配置。若供应商选择阿里云百炼，只需填写 API Key 并选择模型名称；若选择其他供应商，则继续按 Base URL、API Key、Model ID 自定义。</p>
+          <div class="model-groups">
+          <article class="model-group">
+            <div class="model-group-head">
+              <h4 class="model-group-title">Decision LLM</h4>
+              <span class="info-dot" tabindex="0" aria-label="Decision LLM 说明">?</span>
+              <div class="model-tooltip">负责工作流中的判断、质检与事实压缩。它会参与主题重排、文章质量评估，以及 FACT_COMPRESS 步骤中的正文事实提纯，所以更适合选择稳定、结构化输出能力较强的模型。</div>
+            </div>
+            <div class="model-fields">
+              <div class="model-field"><label class="label">供应商</label><select id="m_decision_provider" onchange="syncModelProviderUi('decision')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
+              <div class="model-field"><label class="label">API Key</label><input id="m_decision_key" /></div>
+              <div class="model-field" id="m_decision_bailian_field"><label class="label">模型名称</label><select id="m_decision_bailian_model"></select></div>
+            </div>
+            <div class="model-mode-block" id="m_decision_custom_block" hidden>
+              <div class="model-fields">
+                <div class="model-field"><label class="label">Base URL</label><input id="m_decision_base" /></div>
+                <div class="model-field"><label class="label">Model ID</label><input id="m_decision_model" /></div>
+              </div>
+            </div>
+            <div class="small">服务步骤：`RERANK`、`QUALITY_CHECK`、`FACT_COMPRESS`</div>
+            <div class="model-inline-hint" id="m_decision_bailian_hint">已内置百炼专用地址，保存时将自动写入 DashScope 兼容 URL。当前同一套配置会同时服务 `RERANK / QUALITY_CHECK / FACT_COMPRESS` 等分析型步骤，系统会按输入复杂度自动放大超时档位。</div>
+          </article>
+
+          <article class="model-group">
+            <div class="model-group-head">
+              <h4 class="model-group-title">Rerank LLM</h4>
+              <span class="info-dot" tabindex="0" aria-label="Rerank LLM 说明">?</span>
+              <div class="model-tooltip">负责对候选话题或候选结果进行二次排序，让更适合公众号文章的内容优先排在前面。</div>
+            </div>
+            <div class="model-fields">
+              <div class="model-field"><label class="label">供应商</label><select id="m_rerank_provider" onchange="syncModelProviderUi('rerank')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
+              <div class="model-field"><label class="label">API Key</label><input id="m_rerank_key" /></div>
+              <div class="model-field" id="m_rerank_bailian_field"><label class="label">模型名称</label><select id="m_rerank_bailian_model"></select></div>
+            </div>
+            <div class="model-mode-block" id="m_rerank_custom_block" hidden>
+              <div class="model-fields">
+                <div class="model-field"><label class="label">Base URL</label><input id="m_rerank_base" /></div>
+                <div class="model-field"><label class="label">Model ID</label><input id="m_rerank_model" /></div>
+              </div>
+            </div>
+            <div class="model-inline-hint" id="m_rerank_bailian_hint">若选择百炼专用重排模型，系统会自动切换到原生排序接口，无需你再手填 URL。正文感知重排时，候选数量和摘样长度越大，超时档位会自动提高。</div>
+          </article>
+
+          <article class="model-group">
+            <div class="model-group-head">
+              <h4 class="model-group-title">Writer LLM</h4>
+              <span class="info-dot" tabindex="0" aria-label="Writer LLM 说明">?</span>
+              <div class="model-tooltip">负责生成文章正文内容，把选题、结构和写作要求扩展为完整可发布的文案。</div>
+            </div>
+            <div class="model-fields">
+              <div class="model-field"><label class="label">供应商</label><select id="m_writer_provider" onchange="syncModelProviderUi('writer')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
+              <div class="model-field"><label class="label">API Key</label><input id="m_writer_key" /></div>
+              <div class="model-field" id="m_writer_bailian_field"><label class="label">模型名称</label><select id="m_writer_bailian_model"></select></div>
+            </div>
+            <div class="model-mode-block" id="m_writer_custom_block" hidden>
+              <div class="model-fields">
+                <div class="model-field"><label class="label">Base URL</label><input id="m_writer_base" /></div>
+                <div class="model-field"><label class="label">Model ID</label><input id="m_writer_model" /></div>
+              </div>
+            </div>
+            <div class="model-inline-hint" id="m_writer_bailian_hint">正文模型建议优先选择 `qwen-plus` 或 `qwen-max`，可在效果与成本之间灵活切换。系统不会裁剪正文质量所需输入，而是根据 prompt 复杂度自动提高超时档位。</div>
+          </article>
+
+          <article class="model-group">
+            <div class="model-group-head">
+              <h4 class="model-group-title">Cover Prompt LLM</h4>
+              <span class="info-dot" tabindex="0" aria-label="Cover Prompt LLM 说明">?</span>
+              <div class="model-tooltip">负责把文章内容转换为高质量封面提示词，给图像模型提供更明确的视觉生成描述。</div>
+            </div>
+            <div class="model-fields">
+              <div class="model-field"><label class="label">供应商</label><select id="m_cover_prompt_provider" onchange="syncModelProviderUi('cover_prompt')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
+              <div class="model-field"><label class="label">API Key</label><input id="m_cover_prompt_key" /></div>
+              <div class="model-field" id="m_cover_prompt_bailian_field"><label class="label">模型名称</label><select id="m_cover_prompt_bailian_model"></select></div>
+            </div>
+            <div class="model-mode-block" id="m_cover_prompt_custom_block" hidden>
+              <div class="model-fields">
+                <div class="model-field"><label class="label">Base URL</label><input id="m_cover_prompt_base" /></div>
+                <div class="model-field"><label class="label">Model ID</label><input id="m_cover_prompt_model" /></div>
+              </div>
+            </div>
+            <div class="model-inline-hint" id="m_cover_prompt_bailian_hint">封面提示词通常用轻量文本模型就够了，百炼模式下可直接从常用模型中选择。</div>
+          </article>
+
+          <article class="model-group">
+            <div class="model-group-head">
+              <h4 class="model-group-title">Cover Image LLM</h4>
+              <span class="info-dot" tabindex="0" aria-label="Cover Image LLM 说明">?</span>
+              <div class="model-tooltip">负责根据封面提示词生成最终封面图或配图，直接决定文章对外展示时的视觉效果。</div>
+            </div>
+            <div class="model-fields">
+              <div class="model-field"><label class="label">供应商</label><select id="m_cover_image_provider" onchange="syncModelProviderUi('cover_image')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
+              <div class="model-field"><label class="label">API Key</label><input id="m_cover_image_key" /></div>
+              <div class="model-field" id="m_cover_image_bailian_field"><label class="label">模型名称</label><select id="m_cover_image_bailian_model"></select></div>
+            </div>
+            <div class="model-mode-block" id="m_cover_image_custom_block" hidden>
+              <div class="model-fields">
+                <div class="model-field"><label class="label">Base URL</label><input id="m_cover_image_base" /></div>
+                <div class="model-field"><label class="label">Model ID</label><input id="m_cover_image_model" /></div>
+              </div>
+            </div>
+            <div class="model-inline-hint" id="m_cover_image_bailian_hint">若选择百炼图片模型，保存后系统会自动走原生文生图接口；若改用其他平台，切回自定义即可。</div>
+          </article>
+        </div>
+        <div class="field-hint" style="margin-top:10px">当前已支持自动识别百炼原生能力：`qwen3-rerank` / `qwen3-rerank-plus` 会走排序接口，`wan2.6-t2i`、`wanx2.0-t2i-turbo` 等出图模型会走文生图接口；其他供应商保持原有自定义接入方式。</div>
+        <div class="btns" style="margin-top:10px">
+          <button onclick="saveModels()">保存模型配置</button>
+        </div>
+      </section>
+
+        <section id="module-wechat" class="card module-panel">
+        <h3>微信公众号配置</h3>
+        <label class="label">App ID</label><input id="wechat_app_id" />
+        <label class="label">App Secret</label><input id="wechat_app_secret" />
+        <label class="label">Author（可选）</label><input id="wechat_author" />
+        <div class="field-hint" style="margin-top:10px">文章来源链接会随任务选中的原始链接自动带入，封面素材 ID 暂由系统内部流程处理，界面不再单独填写。</div>
+        <div class="btns" style="margin-top:10px">
+          <button onclick="saveWechat()">保存公众号配置</button>
+        </div>
+        </section>
+
+        <section id="module-smtp" class="card module-panel">
+        <h3>SMTP 与日报配置</h3>
+        <label class="label">SMTP Host</label><input id="smtp_host" />
+        <div class="row">
+          <div class="span-4"><label class="label">Port</label><input id="smtp_port" /></div>
+          <div class="span-4"><label class="label">TLS</label><select id="smtp_tls"><option value="true">true</option><option value="false">false</option></select></div>
+          <div class="span-4"><label class="label">Subject Prefix</label><input id="mail_subject_prefix" /></div>
+        </div>
+        <label class="label">是否启用日报邮件</label>
+        <select id="mail_daily_enabled"><option value="true">true</option><option value="false">false</option></select>
+        <label class="label">SMTP User</label><input id="smtp_user" />
+        <label class="label">SMTP Password</label><input id="smtp_password" />
+        <label class="label">From Address</label><input id="mail_from" />
+        <label class="label">To Address(es)（留空默认不发送）</label><input id="mail_to" />
+        <div class="btns" style="margin-top:10px">
+          <button onclick="saveMail()">保存邮件配置</button>
+          <button class="secondary" onclick="sendTestMail()">发送测试邮件</button>
+        </div>
+        <div id="mailTestStatus" class="mail-test-status" aria-live="polite"></div>
+        </section>
+
+        <section id="module-proxy" class="card module-panel">
+        <h3>代理配置（Xray / VLESS）</h3>
+        <label class="label">是否启用代理</label>
+        <select id="proxy_enabled"><option value="false">false</option><option value="true">true</option></select>
+        <label class="label">ALL_PROXY</label><input id="proxy_all" placeholder="socks5h://127.0.0.1:10808" />
+        <label class="label">VLESS 分享链接（敏感，按需填写）</label>
+        <textarea id="proxy_share" placeholder="vless://..."></textarea>
+        <p class="small">填写分享链接后，系统会自动解析并补全代理字段，例如是否开启代理、节点摘要和 ALL_PROXY。</p>
+        <div id="proxyAutoInfo" class="small"></div>
+        <div class="btns" style="margin-top:10px">
+          <button onclick="saveProxy()">保存代理配置</button>
+          <button class="secondary" onclick="previewProxyParse()">仅解析预览</button>
+        </div>
+        </section>
+
+        <section id="module-actions" class="card module-panel">
+        <h3>任务动作</h3>
+        <label class="label">目标 Run ID</label>
+        <input id="action_run_id" placeholder="从最近任务中复制 run_id" />
+        <p class="small">查看任务详情时会自动把当前任务的 Run ID 同步到这里，直接点动作按钮即可。</p>
+        <div class="btns" style="margin-top:10px">
+          <button class="secondary" onclick="runAction('rerun_full')">重跑本轮（全流程）</button>
+          <button class="secondary" onclick="runAction('retry_from_failed_step')">从失败步骤续跑</button>
+          <button class="secondary" onclick="runAction('retry_wechat_draft')">仅重传微信草稿</button>
+          <button class="warn" onclick="runAction('regenerate_article')">仅重新生成文章</button>
+          <button class="warn" onclick="runAction('regenerate_cover')">仅重新生成封面</button>
+        </div>
+        <div id="actionStatus" class="trigger-status" aria-live="polite"></div>
+        </section>
+
+        <section id="module-detail" class="card module-panel">
+        <h3>任务详情</h3>
+        <div id="runDetail" class="detail-shell">
+          <div class="detail-empty">等待选择任务...</div>
+        </div>
+        </section>
+      </main>
+    </div>
+  </div>
+
+  <div class="feedback-overlay" id="feedbackOverlay" role="dialog" aria-modal="true" aria-labelledby="feedbackTitle" aria-describedby="feedbackText">
+    <div class="feedback-dialog">
+      <div class="feedback-badge" aria-hidden="true">✓</div>
+      <h3 class="feedback-title" id="feedbackTitle">保存成功</h3>
+      <p class="feedback-text" id="feedbackText">当前配置已经写入系统。</p>
+      <div class="feedback-actions">
+        <button type="button" id="feedbackCloseBtn" onclick="hideFeedbackModal()">我知道了</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    async function api(path, method='GET', body=null) {
+      const res = await fetch(path, {
+        method,
+        headers: {'Content-Type': 'application/json'},
+        body: body ? JSON.stringify(body) : null
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return await res.json();
+    }
+    const statusClass = s => `status-${s}`;
+    const STATUS_LABELS = {
+      pending: '等待中',
+      running: '运行中',
+      success: '成功',
+      failed: '失败',
+      partial_success: '部分成功'
+    };
+    const SOURCE_STATUS_LABELS = {
+      ok: '健康',
+      updated_url: '已切换 Feed',
+      switch_to_html_list: '已切换列表页',
+      recovered: '已恢复',
+      manual_review: '待复核',
+      unknown: '未检查'
+    };
+    const ROLE_LABELS = {
+      decision: 'Decision',
+      rerank: 'Rerank',
+      writer: 'Writer',
+      cover_prompt: 'Cover Prompt',
+      cover_image: 'Cover Image'
+    };
+    const MODEL_ROLES = ['decision', 'rerank', 'writer', 'cover_prompt', 'cover_image'];
+    const BAILIAN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
+    const BAILIAN_PROVIDER = 'aliyun_bailian';
+    const CUSTOM_PROVIDER = 'custom';
+    const BAILIAN_ROLE_MODELS = {
+      decision: [
+        {value: '', label: '请选择模型'},
+        {value: 'qwen-plus', label: 'qwen-plus'},
+        {value: 'qwen3.5-plus', label: 'qwen3.5-plus'},
+        {value: 'qwen-max', label: 'qwen-max'},
+        {value: 'qwen-flash', label: 'qwen-flash'},
+        {value: 'deepseek-v3.2', label: 'deepseek-v3.2'},
+        {value: 'kimi-k2.5', label: 'kimi-k2.5'},
+        {value: 'moonshot-kimi-k2-instruct', label: 'moonshot-kimi-k2-instruct'},
+        {value: 'glm-5', label: 'glm-5'},
+        {value: 'glm-4.7', label: 'glm-4.7'}
+      ],
+      rerank: [
+        {value: '', label: '请选择模型'},
+        {value: 'qwen3-rerank', label: 'qwen3-rerank'},
+        {value: 'qwen3-rerank-plus', label: 'qwen3-rerank-plus'}
+      ],
+      writer: [
+        {value: '', label: '请选择模型'},
+        {value: 'qwen-plus', label: 'qwen-plus'},
+        {value: 'qwen3.5-plus', label: 'qwen3.5-plus'},
+        {value: 'qwen-max', label: 'qwen-max'},
+        {value: 'qwen-flash', label: 'qwen-flash'},
+        {value: 'deepseek-v3.2', label: 'deepseek-v3.2'},
+        {value: 'kimi-k2.5', label: 'kimi-k2.5'},
+        {value: 'moonshot-kimi-k2-instruct', label: 'moonshot-kimi-k2-instruct'},
+        {value: 'glm-5', label: 'glm-5'},
+        {value: 'glm-4.7', label: 'glm-4.7'}
+      ],
+      cover_prompt: [
+        {value: '', label: '请选择模型'},
+        {value: 'qwen-flash', label: 'qwen-flash'},
+        {value: 'qwen-plus', label: 'qwen-plus'},
+        {value: 'qwen3.5-plus', label: 'qwen3.5-plus'},
+        {value: 'deepseek-v3.2', label: 'deepseek-v3.2'},
+        {value: 'kimi-k2.5', label: 'kimi-k2.5'},
+        {value: 'moonshot-kimi-k2-instruct', label: 'moonshot-kimi-k2-instruct'},
+        {value: 'glm-5', label: 'glm-5'},
+        {value: 'glm-4.7', label: 'glm-4.7'},
+        {value: 'qwen-max', label: 'qwen-max'}
+      ],
+      cover_image: [
+        {value: '', label: '请选择模型'},
+        {value: 'wanx2.0-t2i-turbo', label: 'wanx2.0-t2i-turbo'},
+        {value: 'wan2.6-t2i', label: 'wan2.6-t2i'}
+      ]
+    };
+    let settingsCache = {};
+    let runsCache = [];
+    let sourceHealthCache = {summary: {}, sources: [], active_maintenance: null};
+    let runsQuickFilter = 'all';
+    let runsPage = 1;
+    let activeModule = 'module-trigger';
+    let triggerProgressTimer = null;
+    let activeTriggerRunId = '';
+    const RUNS_PAGE_SIZE = 8;
+    const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'partial_success']);
+    const RUN_STEP_ORDER = {
+      main: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE', 'FETCH', 'DEDUP', 'RULE_SCORE', 'RERANK', 'SELECT', 'SOURCE_ENRICH', 'FACT_PACK', 'FACT_COMPRESS', 'WRITE', 'QUALITY_CHECK', 'COVER_5D', 'COVER_GEN', 'COVER_CHECK', 'WECHAT_DRAFT'],
+      health: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE']
+    };
+
+    function setActiveModule(moduleId) {
+      activeModule = moduleId;
+      document.querySelectorAll('.module-panel').forEach(node => {
+        node.classList.toggle('active', node.id === moduleId);
+      });
+      document.querySelectorAll('.module-nav-btn').forEach(node => {
+        node.classList.toggle('active', node.id === `nav-${moduleId}`);
+      });
+      if (history.replaceState) {
+        history.replaceState(null, '', `#${moduleId}`);
+      }
+      if (moduleId === 'module-sources') {
+        loadSourceHealth().catch(err => console.error('loadSourceHealth failed', err));
+      }
+      window.scrollTo({top: 0, behavior: 'smooth'});
+    }
+
+    function populateBailianModelSelect(role, currentValue='') {
+      const select = document.getElementById(`m_${role}_bailian_model`);
+      if (!select) return;
+      const presets = BAILIAN_ROLE_MODELS[role] || [{value: '', label: '请选择模型'}];
+      const values = new Set(presets.map(item => item.value));
+      const options = presets.slice();
+      if (currentValue && !values.has(currentValue)) {
+        options.push({value: currentValue, label: `${currentValue}（当前值）`});
+      }
+      select.innerHTML = options.map(item => `<option value="${escapeHtml(item.value)}">${escapeHtml(item.label)}</option>`).join('');
+      select.value = currentValue && options.some(item => item.value === currentValue) ? currentValue : (presets[0]?.value || '');
+    }
+
+    function inferModelProvider(role) {
+      const explicit = getVal(`model.${role}.provider`, '');
+      if (explicit === BAILIAN_PROVIDER || explicit === CUSTOM_PROVIDER) return explicit;
+      const baseUrl = getVal(`model.${role}.base_url`, '').toLowerCase();
+      const modelId = getVal(`model.${role}.model_id`, '');
+      const knownBailianModels = new Set((BAILIAN_ROLE_MODELS[role] || []).map(item => item.value).filter(Boolean));
+      if (baseUrl.includes('dashscope.aliyuncs.com') || knownBailianModels.has(modelId)) {
+        return BAILIAN_PROVIDER;
+      }
+      if (!baseUrl && !modelId) {
+        return BAILIAN_PROVIDER;
+      }
+      return CUSTOM_PROVIDER;
+    }
+
+    function syncModelProviderUi(role) {
+      const provider = document.getElementById(`m_${role}_provider`)?.value || CUSTOM_PROVIDER;
+      const customBlock = document.getElementById(`m_${role}_custom_block`);
+      const bailianField = document.getElementById(`m_${role}_bailian_field`);
+      const bailianHint = document.getElementById(`m_${role}_bailian_hint`);
+      if (customBlock) customBlock.hidden = provider !== CUSTOM_PROVIDER;
+      if (bailianField) bailianField.hidden = provider !== BAILIAN_PROVIDER;
+      if (bailianHint) bailianHint.hidden = provider !== BAILIAN_PROVIDER;
+    }
+
+    function applyRoleSettings(role) {
+      const provider = inferModelProvider(role);
+      const modelId = getVal(`model.${role}.model_id`, '');
+      const providerSelect = document.getElementById(`m_${role}_provider`);
+      if (providerSelect) providerSelect.value = provider;
+      const apiKeyInput = document.getElementById(`m_${role}_key`);
+      if (apiKeyInput) apiKeyInput.value = getVal(`model.${role}.api_key`, '');
+      const baseInput = document.getElementById(`m_${role}_base`);
+      if (baseInput) baseInput.value = getVal(`model.${role}.base_url`, '');
+      const modelInput = document.getElementById(`m_${role}_model`);
+      if (modelInput) modelInput.value = modelId;
+      populateBailianModelSelect(role, modelId);
+      syncModelProviderUi(role);
+    }
+
+    function collectRoleSettings(role) {
+      const provider = document.getElementById(`m_${role}_provider`)?.value || CUSTOM_PROVIDER;
+      const apiKey = document.getElementById(`m_${role}_key`)?.value.trim() || '';
+      if (provider === BAILIAN_PROVIDER) {
+        return {
+          [`model.${role}.provider`]: BAILIAN_PROVIDER,
+          [`model.${role}.base_url`]: BAILIAN_BASE_URL,
+          [`model.${role}.api_key`]: apiKey,
+          [`model.${role}.model_id`]: document.getElementById(`m_${role}_bailian_model`)?.value.trim() || ''
+        };
+      }
+      return {
+        [`model.${role}.provider`]: CUSTOM_PROVIDER,
+        [`model.${role}.base_url`]: document.getElementById(`m_${role}_base`)?.value.trim() || '',
+        [`model.${role}.api_key`]: apiKey,
+        [`model.${role}.model_id`]: document.getElementById(`m_${role}_model`)?.value.trim() || ''
+      };
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, ch => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;'
+      }[ch]));
+    }
+
+    function formatNumber(value) {
+      return new Intl.NumberFormat('zh-CN').format(Number(value || 0));
+    }
+
+    function formatCurrency(value, digits=4) {
+      const amount = Number(value || 0);
+      if (!Number.isFinite(amount) || amount === 0) return '¥0';
+      const precision = Math.abs(amount) >= 100 ? 2 : digits;
+      return `¥${amount.toFixed(precision)}`;
+    }
+
+    function formatDateTime(value) {
+      if (!value) return '-';
+      const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`;
+      const date = new Date(normalized);
+      if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ').slice(0, 19);
+      return new Intl.DateTimeFormat('zh-CN', {
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      }).format(date).replace(/\//g, '-');
+    }
+
+    function formatShortDateTime(value) {
+      if (!value) return '-';
+      const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`;
+      const date = new Date(normalized);
+      if (Number.isNaN(date.getTime())) return String(value).replace('T', ' ').slice(5, 16);
+      return new Intl.DateTimeFormat('zh-CN', {
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      }).format(date).replace(/\//g, '-');
+    }
+
+    function formatBytes(bytes, digits=2) {
+      const value = Number(bytes || 0);
+      if (!Number.isFinite(value) || value <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const power = Math.min(Math.floor(Math.log(value) / Math.log(1024)), units.length - 1);
+      const scaled = value / (1024 ** power);
+      return `${scaled.toFixed(power === 0 ? 0 : digits)} ${units[power]}`;
+    }
+
+    function formatDuration(ms) {
+      const value = Number(ms || 0);
+      if (!Number.isFinite(value) || value <= 0) return '-';
+      if (value < 1000) return `${Math.round(value)} ms`;
+      if (value < 60000) return `${(value / 1000).toFixed(1)} s`;
+      const minutes = Math.floor(value / 60000);
+      const seconds = Math.round((value % 60000) / 1000);
+      return `${minutes}m ${seconds}s`;
+    }
+
+    function diffDuration(start, end) {
+      if (!start || !end) return '-';
+      const startDate = new Date(/(?:Z|[+-]\d{2}:\d{2})$/.test(start) ? start : `${start}Z`);
+      const endDate = new Date(/(?:Z|[+-]\d{2}:\d{2})$/.test(end) ? end : `${end}Z`);
+      const diff = endDate.getTime() - startDate.getTime();
+      if (!Number.isFinite(diff) || diff <= 0) return '-';
+      return formatDuration(diff);
+    }
+
+    function formatRunType(type) {
+      const map = {
+        main: '主任务',
+        health: '健康检查',
+        manual: '手动任务'
+      };
+      return map[type] || type || '-';
+    }
+
+    function formatMaintenancePhase(value) {
+      const map = {
+        inspect: '检查源',
+        llm_decision: 'LLM 二审',
+        apply: '应用动作',
+        completed: '已完成'
+      };
+      return map[value] || value || '-';
+    }
+
+    function getSourceStatusLabel(item) {
+      const status = String(item?.last_status || '').trim();
+      if (SOURCE_STATUS_LABELS[status]) return SOURCE_STATUS_LABELS[status];
+      if (status.startsWith('http_')) return status.toUpperCase();
+      return status || '未检查';
+    }
+
+    function getSourceStatusClass(item) {
+      const status = String(item?.last_status || '').trim();
+      if (['ok', 'updated_url', 'switch_to_html_list', 'recovered'].includes(status)) return 'success';
+      if (['manual_review', 'unknown'].includes(status)) return status;
+      if (!status) return 'pending';
+      if (status.startsWith('http_')) return status;
+      return 'failed';
+    }
+
+    function getMaintenanceActivity(step) {
+      if (!step || step.name !== 'SOURCE_MAINTENANCE' || step.status !== 'running') return '';
+      const progress = step?.details?.raw?.progress || {};
+      const currentSource = progress.current_source || '';
+      if (!currentSource) return '';
+      const checked = Number(progress.checked_sources || 0);
+      const total = Number(progress.total_sources || 0);
+      return `${formatMaintenancePhase(progress.phase)} / ${currentSource}${total ? ` (${checked}/${total})` : ''}`;
+    }
+
+    function slugifyStep(value) {
+      return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '') || 'step';
+    }
+
+    function toTimestamp(value) {
+      if (!value) return 0;
+      const normalized = /(?:Z|[+-]\d{2}:\d{2})$/.test(value) ? value : `${value}Z`;
+      const time = new Date(normalized).getTime();
+      return Number.isFinite(time) ? time : 0;
+    }
+
+    function getStatusPriority(status) {
+      const priority = {
+        failed: 0,
+        partial_success: 1,
+        running: 2,
+        pending: 3,
+        success: 4
+      };
+      return priority[status] ?? 99;
+    }
+
+    function compareRunText(a, b) {
+      return String(a || '').localeCompare(String(b || ''), 'zh-Hans-CN', {
+        numeric: true,
+        sensitivity: 'base'
+      });
+    }
+
+    function cronToTime(value, fallback='08:30') {
+      const cron = String(value || '').trim();
+      const match = cron.match(/^(\d{1,2})\s+(\d{1,2})\s+\*\s+\*\s+\*$/);
+      if (!match) return fallback;
+      const minute = Math.min(59, Math.max(0, Number(match[1] || 0)));
+      const hour = Math.min(23, Math.max(0, Number(match[2] || 0)));
+      return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+    }
+
+    function timeToCron(value, fallback='30 8 * * *') {
+      const match = String(value || '').trim().match(/^(\d{2}):(\d{2})$/);
+      if (!match) return fallback;
+      return `${Number(match[2])} ${Number(match[1])} * * *`;
+    }
+
+    function hasEntries(value) {
+      return !!value && typeof value === 'object' && !Array.isArray(value) && Object.keys(value).length > 0;
+    }
+
+    function formatDetailText(value) {
+      if (value === null || value === undefined || value === '') return '-';
+      if (typeof value === 'object') return JSON.stringify(value, null, 2);
+      return String(value);
+    }
+
+    function normalizeAuditEntries(value) {
+      if (!Array.isArray(value)) return [];
+      return value.filter(item => item && typeof item === 'object' && item.text).map(item => ({
+        title: item.title || '未命名内容',
+        text: String(item.text || ''),
+        meta: item.meta ? String(item.meta) : '',
+        language: item.language ? String(item.language) : ''
+      }));
+    }
+
+    function renderAuditGroup(title, entries) {
+      if (!entries.length) return '';
+      return `
+        <div class="step-audit-group">
+          <div class="step-audit-title">
+            <span>${escapeHtml(title)}</span>
+            <span>${entries.length} 条</span>
+          </div>
+          <div class="step-audit-list">
+            ${entries.map((entry, index) => {
+              const metaParts = [];
+              if (entry.language) metaParts.push(entry.language);
+              metaParts.push(`${entry.text.length} 字符`);
+              if (entry.meta) metaParts.push(entry.meta);
+              return `
+                <details class="step-audit-card"${index === 0 ? ' open' : ''}>
+                  <summary>
+                    <span class="step-audit-name">${escapeHtml(entry.title)}</span>
+                    <span class="step-audit-meta">${escapeHtml(metaParts.join(' | '))}</span>
+                  </summary>
+                  <pre class="step-audit-body">${escapeHtml(entry.text)}</pre>
+                </details>
+              `;
+            }).join('')}
+          </div>
+        </div>
+      `;
+    }
+
+    function renderStepDetails(step) {
+      const details = step.details || {};
+      const summaryEntries = Object.entries(details.summary || {}).filter(([, value]) => value !== null && value !== undefined && value !== '');
+      const items = Array.isArray(details.items) ? details.items.filter(Boolean) : [];
+      const prompts = normalizeAuditEntries(details.prompts);
+      const outputs = normalizeAuditEntries(details.outputs);
+      const raw = hasEntries(details.raw) ? details.raw : null;
+      const runtimeMeta = Array.isArray(raw?.llm_runtime) ? raw.llm_runtime.filter(item => item && typeof item === 'object') : [];
+      const headline = details.headline ? `
+        <div class="step-headline">${escapeHtml(details.headline)}</div>
+      ` : '';
+      const summaryBlock = summaryEntries.length ? `
+        <div class="step-detail-grid">
+          ${summaryEntries.map(([key, value]) => `
+            <div class="step-detail-item">
+              <span>${escapeHtml(key)}</span>
+              <strong>${escapeHtml(formatDetailText(value))}</strong>
+            </div>
+          `).join('')}
+        </div>
+      ` : '';
+      const runtimeBlock = runtimeMeta.length ? `
+        <div class="step-detail-item">
+          <span>模型超时计划</span>
+          <div class="timeout-chip-group">
+            ${runtimeMeta.map(item => `
+              <span class="timeout-chip tier-${escapeHtml(item.complexity_tier || 'rule')}">
+                ${escapeHtml(`${item.role || '-'} ${item.complexity_tier || '-'} / ${item.timeout_seconds || '-'}s`)}
+              </span>
+            `).join('')}
+          </div>
+        </div>
+      ` : '';
+      const itemsBlock = items.length ? `
+        <ul class="step-detail-items">
+          ${items.map(item => `<li>${escapeHtml(item)}</li>`).join('')}
+        </ul>
+      ` : '';
+      const promptBlock = renderAuditGroup('提示词审计', prompts);
+      const outputBlock = renderAuditGroup('模型回包', outputs);
+      const insight = headline || summaryBlock || runtimeBlock || itemsBlock || promptBlock || outputBlock
+        ? `<div class="step-insight">${headline}${summaryBlock}${runtimeBlock}${itemsBlock}${promptBlock}${outputBlock}</div>`
+        : '';
+      const rawBlock = raw ? `
+        <details class="step-detail-panel">
+          <summary>查看步骤原始信息</summary>
+          <div class="step-detail-raw">${escapeHtml(JSON.stringify(raw, null, 2))}</div>
+        </details>
+      ` : '';
+      return insight + rawBlock;
+    }
+
+    function getCurrentStepIndex(steps) {
+      const runningIndex = steps.findIndex(step => step.status === 'running');
+      if (runningIndex >= 0) return runningIndex;
+      const failedIndex = steps.findIndex(step => step.status === 'failed');
+      if (failedIndex >= 0) return failedIndex;
+      for (let i = steps.length - 1; i >= 0; i--) {
+        if (steps[i].status === 'success' || steps[i].status === 'partial_success') return i;
+      }
+      return steps.length ? steps.length - 1 : -1;
+    }
+
+    function updateSortIndicators() {
+      const sortOrder = document.getElementById('runsSortOrder')?.value || 'time_desc';
+      const stateMap = {
+        started_at: document.getElementById('sortStartedAt'),
+        status: document.getElementById('sortStatus'),
+        quality_score: document.getElementById('sortQuality'),
+        article_title: document.getElementById('sortTitle')
+      };
+      const iconMap = {
+        started_at: document.getElementById('sortStartedAtIcon'),
+        status: document.getElementById('sortStatusIcon'),
+        quality_score: document.getElementById('sortQualityIcon'),
+        article_title: document.getElementById('sortTitleIcon')
+      };
+      Object.values(stateMap).forEach(node => node?.classList.remove('active'));
+      Object.values(iconMap).forEach(node => { if (node) node.textContent = '-'; });
+
+      const active = (() => {
+        if (sortOrder === 'time_desc') return ['started_at', '↓'];
+        if (sortOrder === 'time_asc') return ['started_at', '↑'];
+        if (sortOrder === 'score_desc') return ['quality_score', '↓'];
+        if (sortOrder === 'score_asc') return ['quality_score', '↑'];
+        if (sortOrder === 'title_asc') return ['article_title', 'A'];
+        if (sortOrder === 'title_desc') return ['article_title', 'Z'];
+        if (sortOrder === 'status_priority') return ['status', '!'];
+        if (sortOrder === 'status_reverse') return ['status', '✓'];
+        return null;
+      })();
+      if (!active) return;
+      stateMap[active[0]]?.classList.add('active');
+      if (iconMap[active[0]]) iconMap[active[0]].textContent = active[1];
+    }
+
+    function toggleRunsSort(column) {
+      const select = document.getElementById('runsSortOrder');
+      const current = select?.value || 'time_desc';
+      const next = (() => {
+        if (column === 'started_at') return current === 'time_desc' ? 'time_asc' : 'time_desc';
+        if (column === 'quality_score') return current === 'score_desc' ? 'score_asc' : 'score_desc';
+        if (column === 'article_title') return current === 'title_asc' ? 'title_desc' : 'title_asc';
+        if (column === 'status') return current === 'status_priority' ? 'status_reverse' : 'status_priority';
+        return current;
+      })();
+      if (select) select.value = next;
+      runsPage = 1;
+      renderRunsTable();
+      syncRunDetailWithFilters();
+    }
+
+    function setRunsQuickFilter(mode) {
+      runsQuickFilter = mode || 'all';
+      runsPage = 1;
+      document.querySelectorAll('.filter-chip').forEach(node => node.classList.remove('active'));
+      const activeButton = {
+        all: 'quickFilterAll',
+        issues: 'quickFilterIssues',
+        success: 'quickFilterSuccess',
+        health: 'quickFilterHealth'
+      }[runsQuickFilter];
+      if (activeButton) {
+        document.getElementById(activeButton)?.classList.add('active');
+      }
+      renderRunsTable();
+      syncRunDetailWithFilters();
+    }
+
+    function changeRunsPage(delta) {
+      runsPage = Math.max(1, runsPage + delta);
+      renderRunsTable();
+    }
+
+    function jumpToStep(anchorId) {
+      const node = document.getElementById(anchorId);
+      if (!node) return;
+      node.scrollIntoView({behavior: 'smooth', block: 'center'});
+    }
+
+    function scrollToCurrentStep() {
+      const node = document.querySelector('.step-item.current-step');
+      if (!node) return;
+      window.requestAnimationFrame(() => {
+        node.scrollIntoView({behavior: 'smooth', block: 'center'});
+      });
+    }
+
+    function syncRunDetailWithFilters() {
+      const currentRunId = document.getElementById('action_run_id')?.value.trim();
+      const filtered = getFilteredRuns();
+      if (!filtered.length) return;
+      if (filtered.some(run => run.id === currentRunId)) return;
+      loadRunDetail(filtered[0].id, false);
+    }
+
+    function renderRoleChips(items) {
+      const maxTotal = Math.max(...items.map(item => Number(item.total_tokens || 0)), 1);
+      return items.map(item => {
+        const role = ROLE_LABELS[item.role] || item.role;
+        const width = Math.max(8, (Number(item.total_tokens || 0) / maxTotal) * 100);
+        return `
+          <div class="token-role">
+            <div class="token-role-head">
+              <strong>${escapeHtml(role)}</strong>
+              <span>${formatNumber(item.total_tokens)} tokens / ${formatCurrency(item.total_cost || 0)}</span>
+            </div>
+            <div class="token-role-track">
+              <div class="token-role-fill" style="width:${width.toFixed(2)}%"></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderModelCosts(items) {
+      if (!Array.isArray(items) || !items.length) return '';
+      return items.slice(0, 4).map(item => {
+        const summary = [
+          `调用 ${formatNumber(item.calls_count)} 次`,
+          Number(item.total_tokens || 0) > 0 ? `${formatNumber(item.total_tokens)} tokens` : '按次计费',
+          item.tier_label ? `计费档位：${item.tier_label}` : ''
+        ].filter(Boolean).join(' | ');
+        return `
+          <div class="token-model-row">
+            <div class="token-model-head">
+              <strong>${escapeHtml(item.model || item.canonical_model || '-')}</strong>
+              <span class="token-model-cost">${formatCurrency(item.total_cost || 0)}</span>
+            </div>
+            <div class="token-model-sub">${escapeHtml(summary)}</div>
+            ${item.note ? `<div class="token-model-sub">${escapeHtml(item.note)}</div>` : ''}
+          </div>
+        `;
+      }).join('');
+    }
+
+    function renderTokenCard(key, bucket) {
+      const featured = key === 'current_run' ? ' featured' : '';
+      const badge = key === 'current_run'
+        ? (bucket.run_id ? `Run ${bucket.run_id.slice(0, 8)}` : '暂无真实任务')
+        : (bucket.range_start ? `${formatShortDateTime(bucket.range_start)} 起` : '统计窗口');
+      const note = key === 'current_run'
+        ? (bucket.started_at ? `开始时间：${formatDateTime(bucket.started_at)}` : '当前没有真实模型调用')
+        : (bucket.range_start ? `统计范围：${formatShortDateTime(bucket.range_start)} 至 ${formatShortDateTime(bucket.range_end)}` : '');
+      const costs = bucket.costs || {};
+      const pricing = bucket.pricing || {};
+      const coverageText = Number(costs.unsupported_calls_count || 0) > 0
+        ? `已覆盖 ${formatNumber(costs.supported_calls_count || 0)} 次，未覆盖 ${formatNumber(costs.unsupported_calls_count || 0)} 次`
+        : `已覆盖 ${formatNumber(costs.supported_calls_count || 0)} 次`;
+      const mockNotice = Number(bucket.excluded_mock_calls_count || 0) > 0
+        ? `<div class="storage-inline-note">已排除 ${formatNumber(bucket.excluded_mock_calls_count)} 次本地 mock / 估算调用，避免把未真实执行的模型数据算进概览。</div>`
+        : '';
+      const pricingWarning = Array.isArray(pricing.unsupported_models) && pricing.unsupported_models.length
+        ? `<div class="token-warning-note">以下模型当前未纳入内置价格表，暂不计入费用：${escapeHtml(pricing.unsupported_models.join('、'))}</div>`
+        : '';
+      const pricingModeLabel = pricing.pricing_mode === 'official_auto_sync' ? '官方自动同步' : '内置兜底';
+      const pricingStatus = pricing.last_sync_at
+        ? `${pricingModeLabel} | 最近同步：${formatDateTime(pricing.last_sync_at)}`
+        : `${pricingModeLabel} | 尚未完成官方同步`;
+      const pricingError = pricing.last_sync_error
+        ? `<div class="token-warning-note">最近一次官方价格同步失败：${escapeHtml(pricing.last_sync_error)}</div>`
+        : '';
+      return `
+        <article class="token-card${featured}">
+          <div class="token-card-head">
+            <h4 class="token-card-title">${escapeHtml(bucket.label || '')}</h4>
+            <span class="token-badge">${escapeHtml(badge)}</span>
+          </div>
+          <div class="token-total">
+            <strong>${formatNumber(bucket.total_tokens)}</strong>
+            <span>Total Tokens</span>
+          </div>
+          <div class="token-cost-total">
+            <strong>${formatCurrency(costs.total_cost || 0)}</strong>
+            <span>预估费用（${escapeHtml((costs.currency || 'CNY').toUpperCase())}）</span>
+          </div>
+          <div class="token-stats">
+            <div class="token-stat">
+              <b>${formatNumber(bucket.prompt_tokens)}</b>
+              <span>Prompt</span>
+            </div>
+            <div class="token-stat">
+              <b>${formatNumber(bucket.completion_tokens)}</b>
+              <span>Completion</span>
+            </div>
+            <div class="token-stat">
+              <b>${formatNumber(bucket.calls_count)}</b>
+              <span>真实调用次数</span>
+            </div>
+            <div class="token-stat">
+              <b>${formatCurrency(costs.prompt_cost || 0)}</b>
+              <span>输入成本</span>
+            </div>
+            <div class="token-stat">
+              <b>${formatCurrency(costs.completion_cost || 0)}</b>
+              <span>输出成本</span>
+            </div>
+            <div class="token-stat">
+              <b>${formatCurrency(costs.image_cost || 0)}</b>
+              <span>图片成本</span>
+            </div>
+            <div class="token-stat">
+              <b>${escapeHtml(coverageText)}</b>
+              <span>价格覆盖</span>
+            </div>
+          </div>
+          ${bucket.has_data ? `<div class="token-roles">${renderRoleChips(bucket.by_role || [])}</div>` : `<div class="token-empty">当前时间窗口没有真实模型调用数据</div>`}
+          ${bucket.has_data ? `<div class="token-models">${renderModelCosts(bucket.by_model || [])}</div>` : ''}
+          <div class="storage-inline-note">${escapeHtml(note)}</div>
+          <div class="storage-inline-note">${escapeHtml(pricingStatus)}</div>
+          <div class="storage-inline-note">价格表版本时间：${escapeHtml(pricing.catalog_updated_at || '-')}</div>
+          ${mockNotice}
+          ${pricingWarning}
+          ${pricingError}
+        </article>
+      `;
+    }
+
+    function renderRunDetail(data) {
+      const run = data.run || {};
+      const steps = data.steps || [];
+      const summary = run.summary || {};
+      const title = run.article_title || `${run.run_type || '任务'} / ${run.id || ''}`;
+      const summaryJson = escapeHtml(JSON.stringify(run.summary || {}, null, 2));
+      const fetchStep = steps.find(step => step && step.name === 'FETCH');
+      const fetchedTopics = Array.isArray(summary.fetched_items) && summary.fetched_items.length
+        ? summary.fetched_items
+        : (Array.isArray(fetchStep?.details?.raw?.items) ? fetchStep.details.raw.items : []);
+      const topTopics = Array.isArray(summary.top_n) ? summary.top_n.slice(0, 3) : [];
+      const qualityScores = Array.isArray(summary.quality_scores) ? summary.quality_scores : [];
+      const cover5d = summary.cover_5d || {};
+      const health = summary.health || {};
+      const sourceMaintenance = summary.source_maintenance || {};
+      const wechat = summary.wechat || {};
+      const titlePlan = summary.title_plan || {};
+      const articleMarkdown = run.article_markdown || '';
+      const coverUrl = run.cover_url || '';
+      const summarySections = [];
+
+      if (fetchedTopics.length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <div class="summary-block-head">
+              <h5>全部抓取热点</h5>
+              <span class="summary-count">${fetchedTopics.length} 条</span>
+            </div>
+            <div class="summary-list compact">
+              ${fetchedTopics.map((item, index) => `
+                <div class="summary-item">
+                  <div class="summary-item-title">
+                    <span>
+                      ${index + 1}.
+                      ${item.url ? `<a class="summary-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer noopener">${escapeHtml(item.title || '-')}</a>` : escapeHtml(item.title || '-')}
+                    </span>
+                  </div>
+                  <div class="summary-item-sub">${escapeHtml(item.summary || '无摘要')}</div>
+                  <div class="summary-item-sub">来源：${escapeHtml(item.source || '-')} | 发布时间：${formatDateTime(item.published)}</div>
+                </div>
+              `).join('')}
+            </div>
+          </section>
+        `);
+      }
+
+      if (topTopics.length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>候选选题 Top 3</h5>
+            <div class="summary-list">
+              ${topTopics.map((item, index) => `
+                <div class="summary-item">
+                  <div class="summary-item-title">
+                    <span>
+                      ${index + 1}.
+                      ${item.url ? `<a class="summary-link" href="${escapeHtml(item.url)}" target="_blank" rel="noreferrer noopener">${escapeHtml(item.title || '-')}</a>` : escapeHtml(item.title || '-')}
+                    </span>
+                    <span class="score-pill">${Number(item.final_score || 0).toFixed(2)}</span>
+                  </div>
+                  <div class="summary-item-sub">${escapeHtml(item.summary || '无摘要')}</div>
+                  <div class="summary-item-sub">来源：${escapeHtml(item.source || '-')} | 发布时间：${formatDateTime(item.published)}</div>
+                </div>
+              `).join('')}
+            </div>
+          </section>
+        `);
+      }
+
+      if (qualityScores.length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>质量评分轨迹</h5>
+            <div class="summary-tags">
+              ${qualityScores.map((score, idx) => `<span class="summary-tag">第 ${idx + 1} 次 ${escapeHtml(score)}</span>`).join('')}
+            </div>
+          </section>
+        `);
+      }
+
+      if (Object.keys(cover5d).length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>封面 5 维</h5>
+            <div class="summary-kv-grid">
+              ${Object.entries(cover5d).map(([key, value]) => `
+                <div class="summary-mini-kv">
+                  <span>${escapeHtml(key)}</span>
+                  <strong>${escapeHtml(value)}</strong>
+                </div>
+              `).join('')}
+            </div>
+          </section>
+        `);
+      }
+
+      if (Object.keys(health).length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>健康检查结果</h5>
+            <div class="summary-kv-grid">
+              ${Object.entries(health).map(([key, value]) => `
+                <div class="summary-mini-kv">
+                  <span>${escapeHtml(key)}</span>
+                  <strong>${escapeHtml(value)}</strong>
+                </div>
+              `).join('')}
+            </div>
+          </section>
+        `);
+      }
+
+      if (Object.keys(sourceMaintenance).length) {
+        const actions = Array.isArray(sourceMaintenance.actions) ? sourceMaintenance.actions.slice(0, 6) : [];
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>抓取源维护</h5>
+            <div class="summary-kv-grid">
+              <div class="summary-mini-kv">
+                <span>已检查</span>
+                <strong>${escapeHtml(sourceMaintenance.checked_sources ?? 0)}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>异常源</span>
+                <strong>${escapeHtml(sourceMaintenance.failed_sources ?? 0)}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>已变更</span>
+                <strong>${escapeHtml(sourceMaintenance.changed_sources ?? 0)}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>待复核</span>
+                <strong>${escapeHtml(sourceMaintenance.manual_review_sources ?? 0)}</strong>
+              </div>
+            </div>
+            ${actions.length ? `
+              <div class="summary-list compact">
+                ${actions.map(item => `
+                  <div class="summary-item">
+                    <div class="summary-item-title">
+                      <span>${escapeHtml(item.name || '-')}</span>
+                    </div>
+                    <div class="summary-item-sub">
+                      动作：${escapeHtml(item.applied_action || item.final_action || '-')}
+                      | 来源：${escapeHtml(item.decision_source || '-')}
+                    </div>
+                    <div class="summary-item-sub">${escapeHtml(item.reason || '-')}</div>
+                  </div>
+                `).join('')}
+              </div>
+            ` : ''}
+          </section>
+        `);
+      }
+
+      if (Object.keys(titlePlan).length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>标题方案</h5>
+            <div class="summary-kv-grid">
+              <div class="summary-mini-kv">
+                <span>完整标题</span>
+                <strong>${escapeHtml(titlePlan.article_title || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>微信标题</span>
+                <strong>${escapeHtml(titlePlan.wechat_title || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>生成来源</span>
+                <strong>${escapeHtml(titlePlan.source || '-')}</strong>
+              </div>
+            </div>
+          </section>
+        `);
+      }
+
+      if (Object.keys(wechat).length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>微信草稿结果</h5>
+            <div class="summary-kv-grid">
+              <div class="summary-mini-kv">
+                <span>发布状态</span>
+                <strong>${wechat.success ? '成功' : '失败'}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>草稿 ID</span>
+                <strong>${escapeHtml(wechat.draft_id || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>最终发送标题</span>
+                <strong>${escapeHtml(wechat.sent_title || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>最终发送摘要</span>
+                <strong>${escapeHtml(wechat.sent_digest || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>标题长度</span>
+                <strong>${escapeHtml(`${wechat.sent_title_chars || 0} chars / ${wechat.sent_title_bytes || 0} bytes`)}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>摘要长度</span>
+                <strong>${escapeHtml(`${wechat.sent_digest_chars || 0} chars / ${wechat.sent_digest_bytes || 0} bytes`)}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>返回信息</span>
+                <strong>${escapeHtml(wechat.reason || '-')}</strong>
+              </div>
+            </div>
+          </section>
+        `);
+      }
+
+      const currentStepIndex = getCurrentStepIndex(steps);
+      const failedSteps = steps
+        .map((step, index) => ({step, index, anchorId: `step-${slugifyStep(step.name)}-${index}`}))
+        .filter(item => item.step.status === 'failed');
+      const stepCards = steps.length
+        ? steps.map((step, index) => {
+            const anchorId = `step-${slugifyStep(step.name)}-${index}`;
+            const currentClass = index === currentStepIndex ? ' current-step' : '';
+            const shouldExpand = index === currentStepIndex || step.status === 'failed';
+            const detailContent = renderStepDetails(step);
+            const detailBlock = detailContent ? `
+              <details class="step-collapse"${shouldExpand ? ' open' : ''}>
+                <summary>
+                  <span class="step-collapse-label">步骤详情</span>
+                  <span class="step-collapse-state">${shouldExpand ? '默认展开' : '点击展开'}</span>
+                </summary>
+                <div class="step-collapse-body">
+                  ${detailContent}
+                </div>
+              </details>
+            ` : '';
+            return `
+            <article id="${anchorId}" class="step-item ${statusClass(step.status)}${currentClass}">
+              <div class="step-head">
+                <div class="step-title">${escapeHtml(step.name || '-')}</div>
+                <span class="detail-badge ${statusClass(step.status)}">${escapeHtml(STATUS_LABELS[step.status] || step.status || '-')}</span>
+              </div>
+              <div class="step-meta">
+                <span><b>${formatDateTime(step.started_at)}</b>开始时间</span>
+                <span><b>${formatDateTime(step.finished_at)}</b>结束时间</span>
+                <span><b>${formatDuration(step.duration_ms)}</b>耗时</span>
+                <span><b>${formatNumber(step.retry_count || 0)}</b>重试次数</span>
+              </div>
+              ${step.error_message ? `<div class="step-error">${escapeHtml(step.error_message)}</div>` : ''}
+              ${detailBlock}
+            </article>
+          `;
+          }).join('')
+        : `<div class="detail-empty" style="min-height:120px">当前任务还没有步骤详情</div>`;
+
+      const coverBlock = coverUrl ? `
+        <div class="cover-frame">
+          <img src="${escapeHtml(coverUrl)}" alt="${escapeHtml(title)} 封面" loading="lazy" />
+        </div>
+      ` : `<div class="detail-empty" style="min-height:220px">当前任务没有可查看的封面</div>`;
+
+      const articleBlock = articleMarkdown
+        ? `<pre class="article-markdown">${escapeHtml(articleMarkdown)}</pre>`
+        : `<div class="detail-empty" style="min-height:220px">当前任务没有保存文章正文</div>`;
+
+      return `
+        <div class="run-detail">
+          <section class="run-hero">
+            <div class="run-hero-top">
+              <div class="run-hero-main">
+                <h4 class="run-hero-title">${escapeHtml(title)}</h4>
+                <div class="run-hero-sub">Run ID: <span class="mono">${escapeHtml(run.id || '-')}</span></div>
+              </div>
+              <div class="run-badges">
+                <span class="detail-badge ${statusClass(run.status)}">${escapeHtml(STATUS_LABELS[run.status] || run.status || '-')}</span>
+                <span class="detail-badge">${escapeHtml((run.run_type || '-').toUpperCase())}</span>
+                <span class="detail-badge">${escapeHtml(run.trigger_source || 'unknown')}</span>
+              </div>
+            </div>
+            <div class="run-meta-grid">
+              <div class="run-meta-card">
+                <span>质量分</span>
+                <strong>${run.quality_score ?? 0}</strong>
+              </div>
+              <div class="run-meta-card">
+                <span>质量阈值</span>
+                <strong>${run.quality_threshold ?? '-'}</strong>
+              </div>
+              <div class="run-meta-card">
+                <span>质量重试</span>
+                <strong>${formatNumber(run.quality_attempts || 0)}</strong>
+              </div>
+              <div class="run-meta-card">
+                <span>任务总耗时</span>
+                <strong>${diffDuration(run.started_at, run.finished_at)}</strong>
+              </div>
+            </div>
+          </section>
+
+          <div class="run-grid">
+            <section class="detail-card">
+              <h4>任务步骤</h4>
+              <div class="step-tools">
+                <span class="step-tool-label">快速定位</span>
+                ${currentStepIndex >= 0 ? `<button type="button" class="step-jump" onclick="jumpToStep('step-${slugifyStep(steps[currentStepIndex].name)}-${currentStepIndex}')">当前步骤</button>` : ''}
+                ${failedSteps.map(item => `<button type="button" class="step-jump warn" onclick="jumpToStep('${item.anchorId}')">失败: ${escapeHtml(item.step.name || '-')}</button>`).join('')}
+              </div>
+              <div class="steps-list">${stepCards}</div>
+            </section>
+
+            <aside class="run-side">
+              <section class="detail-card">
+                <h4>任务摘要</h4>
+                <div class="detail-keyvals">
+                  <div class="detail-kv"><span>开始时间</span><strong>${formatDateTime(run.started_at)}</strong></div>
+                  <div class="detail-kv"><span>结束时间</span><strong>${formatDateTime(run.finished_at)}</strong></div>
+                  <div class="detail-kv"><span>任务类型</span><strong>${escapeHtml(formatRunType(run.run_type))}</strong></div>
+                  <div class="detail-kv"><span>草稿状态</span><strong>${escapeHtml(run.draft_status || '-')}</strong></div>
+                  <div class="detail-kv"><span>失败兜底</span><strong>${run.quality_fallback_used ? '已启用' : '未启用'}</strong></div>
+                  <div class="detail-kv"><span>错误信息</span><strong>${escapeHtml(run.error_message || '-')}</strong></div>
+                </div>
+              </section>
+
+              <section class="detail-card">
+                <h4>业务摘要</h4>
+                <div class="summary-sections">
+                  ${summarySections.length ? summarySections.join('') : '<div class="detail-empty" style="min-height:120px">当前任务还没有可展示的业务摘要</div>'}
+                </div>
+              </section>
+
+              <details class="detail-json">
+                <summary>查看原始摘要 JSON</summary>
+                <pre>${summaryJson}</pre>
+              </details>
+            </aside>
+          </div>
+
+          <div class="content-view-grid">
+            <section class="detail-card cover-viewer">
+              <h4>封面查看</h4>
+              ${coverBlock}
+            </section>
+            <section class="detail-card article-viewer">
+              <h4>历史文章查看</h4>
+              ${articleBlock}
+            </section>
+          </div>
+        </div>
+      `;
+    }
+
+    function renderRunDetailState(message, kind = 'loading', runId = '') {
+      const label = kind === 'error' ? '任务详情加载失败' : '任务详情加载中';
+      const extra = runId ? `<div class="small" style="margin-top:8px">Run ID: ${escapeHtml(runId)}</div>` : '';
+      return `
+        <div class="detail-empty" style="min-height:180px; text-align:center;">
+          <div>
+            <div style="font-weight:700; color:${kind === 'error' ? '#b91c1c' : '#365073'};">${label}</div>
+            <div style="margin-top:8px;">${escapeHtml(message || '-')}</div>
+            ${extra}
+          </div>
+        </div>
+      `;
+    }
+
+    function getFilteredRuns() {
+      const keyword = document.getElementById('runsKeywordFilter')?.value.trim().toLowerCase() || '';
+      const status = document.getElementById('runsStatusFilter')?.value || '';
+      const type = document.getElementById('runsTypeFilter')?.value || '';
+      const sortOrder = document.getElementById('runsSortOrder')?.value || 'time_desc';
+      const filtered = runsCache.filter(run => {
+        const matchesKeyword = !keyword || [run.id, run.article_title, run.failed_step].some(value =>
+          String(value || '').toLowerCase().includes(keyword)
+        );
+        const matchesStatus = !status || run.status === status;
+        const matchesType = !type || run.run_type === type;
+        const matchesQuick = (() => {
+          if (runsQuickFilter === 'issues') return ['failed', 'partial_success'].includes(run.status);
+          if (runsQuickFilter === 'success') return run.status === 'success';
+          if (runsQuickFilter === 'health') return run.run_type === 'health';
+          return true;
+        })();
+        return matchesKeyword && matchesStatus && matchesType && matchesQuick;
+      });
+      const sorted = [...filtered];
+      sorted.sort((a, b) => {
+        if (sortOrder === 'time_asc') return toTimestamp(a.started_at) - toTimestamp(b.started_at);
+        if (sortOrder === 'score_desc') {
+          const scoreDiff = Number(b.quality_score || 0) - Number(a.quality_score || 0);
+          return scoreDiff || (toTimestamp(b.started_at) - toTimestamp(a.started_at));
+        }
+        if (sortOrder === 'score_asc') {
+          const scoreDiff = Number(a.quality_score || 0) - Number(b.quality_score || 0);
+          return scoreDiff || (toTimestamp(b.started_at) - toTimestamp(a.started_at));
+        }
+        if (sortOrder === 'title_asc') {
+          const titleDiff = compareRunText(a.article_title, b.article_title);
+          return titleDiff || (toTimestamp(b.started_at) - toTimestamp(a.started_at));
+        }
+        if (sortOrder === 'title_desc') {
+          const titleDiff = compareRunText(b.article_title, a.article_title);
+          return titleDiff || (toTimestamp(b.started_at) - toTimestamp(a.started_at));
+        }
+        if (sortOrder === 'status_priority') {
+          const statusDiff = getStatusPriority(a.status) - getStatusPriority(b.status);
+          return statusDiff || (toTimestamp(b.started_at) - toTimestamp(a.started_at));
+        }
+        if (sortOrder === 'status_reverse') {
+          const statusDiff = getStatusPriority(b.status) - getStatusPriority(a.status);
+          return statusDiff || (toTimestamp(b.started_at) - toTimestamp(a.started_at));
+        }
+        return toTimestamp(b.started_at) - toTimestamp(a.started_at);
+      });
+      return sorted;
+    }
+
+    function renderRunsTable() {
+      updateSortIndicators();
+      const filtered = getFilteredRuns();
+      const tbody = document.getElementById('runsBody');
+      const meta = document.getElementById('runsMeta');
+      const pageInfo = document.getElementById('runsPageInfo');
+      const prevBtn = document.getElementById('runsPrevPage');
+      const nextBtn = document.getElementById('runsNextPage');
+      const totalPages = Math.max(1, Math.ceil(filtered.length / RUNS_PAGE_SIZE));
+      if (runsPage > totalPages) runsPage = totalPages;
+      const pageStart = (runsPage - 1) * RUNS_PAGE_SIZE;
+      const data = filtered.slice(pageStart, pageStart + RUNS_PAGE_SIZE);
+      tbody.innerHTML = '';
+      meta.textContent = filtered.length
+        ? `当前显示 ${pageStart + 1}-${pageStart + data.length} / ${filtered.length} 条，原始任务总数 ${runsCache.length}`
+        : `当前显示 0 / 0 条，原始任务总数 ${runsCache.length}`;
+      pageInfo.textContent = `第 ${runsPage} / ${totalPages} 页`;
+      prevBtn.disabled = runsPage <= 1;
+      nextBtn.disabled = runsPage >= totalPages;
+      if (!filtered.length) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `<td colspan="7"><div class="detail-empty" style="min-height:96px">没有符合筛选条件的任务</div></td>`;
+        tbody.appendChild(tr);
+        return filtered;
+      }
+      for (const r of data) {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td class="small">${formatDateTime(r.started_at)}</td>
+          <td><span class="status-chip ${statusClass(r.status)}">${escapeHtml(STATUS_LABELS[r.status] || r.status)}</span></td>
+          <td>${escapeHtml(r.failed_step || '-')}</td>
+          <td><span class="score-pill">${r.quality_score || 0}</span></td>
+          <td>${escapeHtml(r.article_title || '-')}</td>
+          <td class="runs-reason-cell"><div class="runs-reason-text" title="${escapeHtml(r.selection_reason_preview || '-')}">${escapeHtml(r.selection_reason_preview || '-')}</div></td>
+          <td class="runs-detail-cell"><button type="button" class="runs-detail-btn" onclick="loadRunDetail('${r.id}', true, true)">查看</button></td>
+        `;
+        tbody.appendChild(tr);
+      }
+      return filtered;
+    }
+
+    async function loadRuns() {
+      const data = await api('/api/runs?limit=100');
+      const selectedRunId = document.getElementById('action_run_id')?.value.trim();
+      runsCache = data.runs || [];
+      const filteredRuns = renderRunsTable();
+      if (runsCache.length === 0) {
+        document.getElementById('runDetail').innerHTML = '<div class="detail-empty">当前还没有任务记录</div>';
+        return;
+      }
+      const targetRunId = runsCache.some(r => r.id === selectedRunId)
+        ? selectedRunId
+        : ((filteredRuns[0] && filteredRuns[0].id) || runsCache[0].id);
+      const activeRun = runsCache.find(run => ['pending', 'running'].includes(run.status));
+      if (activeRun && activeTriggerRunId !== activeRun.id) {
+        startTriggerProgressPolling(activeRun.id);
+      }
+      if (!activeRun && !activeTriggerRunId) {
+        setTriggerProgressContent('');
+      }
+      if (targetRunId) {
+        await loadRunDetail(targetRunId, false);
+      }
+      if (activeModule === 'module-sources') {
+        await loadSourceHealth();
+      }
+    }
+
+    async function loadRunDetail(id, shouldScroll = false, switchModule = false) {
+      const detailNode = document.getElementById('runDetail');
+      if (switchModule) {
+        setActiveModule('module-detail');
+      }
+      if (detailNode) {
+        detailNode.innerHTML = renderRunDetailState('正在加载任务详情，请稍候...', 'loading', id);
+      }
+      try {
+        const data = await api(`/api/runs/${id}`);
+        if (detailNode) {
+          detailNode.innerHTML = renderRunDetail(data);
+        }
+        const actionInput = document.getElementById('action_run_id');
+        if (actionInput) actionInput.value = id;
+        if (shouldScroll) {
+          scrollToCurrentStep();
+        }
+        return data;
+      } catch (err) {
+        const message = err && err.message ? err.message : String(err || '未知错误');
+        if (detailNode) {
+          detailNode.innerHTML = renderRunDetailState(message, 'error', id);
+        }
+        console.error('loadRunDetail failed', id, err);
+        return null;
+      }
+    }
+
+    async function loadToken() {
+      const data = await api('/api/metrics/tokens/overview');
+      const windows = data.windows || {};
+      const pricing = data.pricing || {};
+      const order = ['current_run', 'today', 'week', 'month'];
+      const pricingModeLabel = pricing.pricing_mode === 'official_auto_sync' ? '官方自动同步' : '内置兜底';
+      const syncStatus = pricing.last_sync_at
+        ? `${pricingModeLabel} | 最近同步：${formatDateTime(pricing.last_sync_at)}`
+        : `${pricingModeLabel} | 尚未完成官方同步`;
+      document.getElementById('pricingSyncStatus').textContent = syncStatus;
+      document.getElementById('tokenSummary').innerHTML = `
+        <div class="token-grid">
+          ${order.map(key => renderTokenCard(key, windows[key] || {label: key, by_role: []})).join('')}
+        </div>
+      `;
+    }
+
+    async function syncPricingNow() {
+      const statusNode = document.getElementById('pricingSyncStatus');
+      if (statusNode) statusNode.textContent = '正在同步官方价格...';
+      try {
+        const result = await api('/api/pricing/sync', 'POST');
+        await loadToken();
+        if (!result.ok && statusNode) {
+          statusNode.textContent = `同步失败，当前继续使用兜底价格：${result.meta?.last_sync_error || ''}`;
+        }
+      } catch (err) {
+        if (statusNode) statusNode.textContent = `同步失败：${err.message}`;
+      }
+    }
+
+    async function loadStorage() {
+      const data = await api('/api/metrics/storage');
+      const projectRatio = data.project_budget_bytes
+        ? Math.min(100, (Number(data.project_used_bytes || 0) / Number(data.project_budget_bytes || 1)) * 100)
+        : 0;
+      document.getElementById('storageSummary').innerHTML = `
+        <div class="storage-panel">
+          <div class="storage-ring" style="--pct:${projectRatio.toFixed(2)}">
+            <div class="storage-ring-center">
+              <strong>${projectRatio.toFixed(1)}%</strong>
+              <span>预算占用</span>
+            </div>
+          </div>
+          <div class="storage-meta">
+            <div class="storage-meta-item">
+              <span>项目空间</span>
+              <strong>${formatBytes(data.project_used_bytes)} / ${formatBytes(data.project_budget_bytes, 0)}</strong>
+            </div>
+            <div class="storage-meta-item">
+              <span>运行数据</span>
+              <strong>${formatBytes(data.project_breakdown?.data_dir_bytes)}</strong>
+            </div>
+            <div class="storage-meta-item">
+              <span>输出目录</span>
+              <strong>${formatBytes(data.project_breakdown?.output_dir_bytes)}</strong>
+            </div>
+            <div class="storage-meta-item">
+              <span>日志目录</span>
+              <strong>${formatBytes(data.project_breakdown?.logs_bytes)}</strong>
+            </div>
+            <div class="storage-meta-item">
+              <span>运行记录</span>
+              <strong>${formatBytes(data.project_breakdown?.runs_bytes)}</strong>
+            </div>
+            <div class="storage-meta-item">
+              <span>系统磁盘使用率</span>
+              <strong>${Number(data.disk_used_percent || 0).toFixed(2)}%</strong>
+            </div>
+          </div>
+        </div>
+        <div class="storage-inline-note">圆环百分比按项目 10 GB 预算计算，明细包含 data、output、logs 及 runs 目录。</div>
+      `;
+    }
+
+    function renderSourceHealth(data) {
+      const summary = data?.summary || {};
+      const sources = Array.isArray(data?.sources) ? data.sources : [];
+      const active = data?.active_maintenance || null;
+      const progress = active?.details?.raw?.progress || {};
+      const activeBlock = active ? `
+        <section class="source-live-banner">
+          <div class="source-live-head">
+            <div class="source-live-title">SOURCE_MAINTENANCE 正在执行</div>
+            <span class="status-chip status-running">Run ${escapeHtml((active.run_id || '').slice(0, 8) || '-')}</span>
+          </div>
+          <div class="source-live-meta">
+            <div class="source-live-stat">
+              <span>当前阶段</span>
+              <strong>${escapeHtml(formatMaintenancePhase(progress.phase))}</strong>
+            </div>
+            <div class="source-live-stat">
+              <span>当前源</span>
+              <strong>${escapeHtml(progress.current_source || '-')}</strong>
+            </div>
+            <div class="source-live-stat">
+              <span>检查进度</span>
+              <strong>${escapeHtml(`${progress.checked_sources || 0} / ${progress.total_sources || 0}`)}</strong>
+            </div>
+            <div class="source-live-stat">
+              <span>开始时间</span>
+              <strong>${escapeHtml(formatDateTime(active.started_at))}</strong>
+            </div>
+          </div>
+        </section>
+      ` : '';
+      const table = sources.length ? `
+        <div class="table-scroll">
+          <table class="source-health-table">
+            <thead>
+              <tr>
+                <th>源</th>
+                <th>状态</th>
+                <th>连续失败</th>
+                <th>最近动作</th>
+                <th>最近检查</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${sources.map(item => `
+                <tr>
+                  <td>
+                    <div class="source-health-name">${escapeHtml(item.name || '-')}</div>
+                    <div class="source-health-sub">${escapeHtml(item.category || '-')} | ${escapeHtml(item.mode || '-')} | 权重 ${escapeHtml(item.weight ?? '-')}</div>
+                    <div class="source-health-sub">${item.current_url ? escapeHtml(item.current_url) : '-'}</div>
+                  </td>
+                  <td>
+                    <span class="status-chip ${statusClass(getSourceStatusClass(item))}">${escapeHtml(getSourceStatusLabel(item))}</span>
+                    <div class="source-health-sub">${escapeHtml(item.last_error || item.last_status || '-')}</div>
+                    <div class="source-health-sub">HTTP: ${escapeHtml(item.last_http_status ?? '-')}</div>
+                  </td>
+                  <td>
+                    <div class="source-health-name">${escapeHtml(item.consecutive_failures ?? 0)}</div>
+                    <div class="source-health-sub">成功 ${escapeHtml(item.total_successes ?? 0)} / 失败 ${escapeHtml(item.total_failures ?? 0)}</div>
+                  </td>
+                  <td>
+                    <div class="source-health-name">${escapeHtml(item.last_action || '-')}</div>
+                    <div class="source-health-sub">${escapeHtml(item.last_action_reason || '-')}</div>
+                    ${item.last_candidate_url ? `<div class="source-health-sub">${escapeHtml(item.last_candidate_url)}</div>` : ''}
+                  </td>
+                  <td>
+                    <div class="source-health-sub">检查：${escapeHtml(formatDateTime(item.last_checked_at))}</div>
+                    <div class="source-health-sub">成功：${escapeHtml(formatDateTime(item.last_success_at))}</div>
+                    <div class="source-health-sub">失败：${escapeHtml(formatDateTime(item.last_failure_at))}</div>
+                  </td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>
+        </div>
+      ` : '<div class="detail-empty" style="min-height:120px">当前还没有抓取源状态数据</div>';
+      return `
+        <div class="source-health-grid">
+          <div class="source-health-cards">
+            <div class="source-health-card"><span>总源数</span><strong>${escapeHtml(summary.total_sources ?? 0)}</strong></div>
+            <div class="source-health-card"><span>启用中</span><strong>${escapeHtml(summary.enabled_sources ?? 0)}</strong></div>
+            <div class="source-health-card"><span>健康源</span><strong>${escapeHtml(summary.healthy_sources ?? 0)}</strong></div>
+            <div class="source-health-card"><span>需关注</span><strong>${escapeHtml(summary.attention_sources ?? 0)}</strong></div>
+          </div>
+          ${activeBlock}
+          ${table}
+        </div>
+      `;
+    }
+
+    async function loadSourceHealth() {
+      const node = document.getElementById('sourceHealthSummary');
+      if (!node) return;
+      try {
+        const data = await api('/api/source-health');
+        sourceHealthCache = data || {summary: {}, sources: [], active_maintenance: null};
+        node.innerHTML = renderSourceHealth(sourceHealthCache);
+      } catch (err) {
+        node.innerHTML = `<div class="detail-empty" style="min-height:120px">抓取源状态加载失败：${escapeHtml(err.message || String(err || '未知错误'))}</div>`;
+      }
+    }
+
+    function getVal(id, d='') { return (settingsCache[id] ?? d) || ''; }
+
+    async function loadSettings() {
+      const data = await api('/api/settings');
+      settingsCache = data.values || {};
+      // schedule
+      document.getElementById('healthCron').value = cronToTime(getVal('general.health_cron', '30 8 * * *'), '08:30');
+      document.getElementById('mainCron').value = cronToTime(getVal('general.main_cron', '0 9 * * *'), '09:00');
+      document.getElementById('topN').value = getVal('general.top_n', '10');
+      document.getElementById('topK').value = getVal('general.top_k', '8');
+      document.getElementById('qualityThreshold').value = getVal('quality.threshold', '78');
+      // model
+      MODEL_ROLES.forEach(applyRoleSettings);
+      // wechat
+      document.getElementById('wechat_app_id').value = getVal('wechat.app_id');
+      document.getElementById('wechat_app_secret').value = getVal('wechat.app_secret');
+      document.getElementById('wechat_author').value = getVal('wechat.author');
+      // smtp
+      document.getElementById('smtp_host').value = getVal('mail.smtp_host');
+      document.getElementById('smtp_port').value = getVal('mail.smtp_port', '587');
+      document.getElementById('smtp_tls').value = getVal('mail.smtp_tls', 'true');
+      document.getElementById('mail_daily_enabled').value = getVal('mail.daily_enabled', 'true');
+      document.getElementById('smtp_user').value = getVal('mail.smtp_user');
+      document.getElementById('smtp_password').value = getVal('mail.smtp_password');
+      document.getElementById('mail_from').value = getVal('mail.from_address');
+      document.getElementById('mail_to').value = getVal('mail.to_addresses');
+      document.getElementById('mail_subject_prefix').value = getVal('mail.subject_prefix', '[wechat-agent-lite]');
+      // proxy
+      document.getElementById('proxy_enabled').value = getVal('proxy.enabled', 'false');
+      document.getElementById('proxy_all').value = getVal('proxy.all_proxy', 'socks5h://127.0.0.1:10808');
+      document.getElementById('proxy_share').value = getVal('proxy.share_link');
+    }
+
+    function showFeedbackModal(title, text) {
+      const overlay = document.getElementById('feedbackOverlay');
+      document.getElementById('feedbackTitle').textContent = title || '保存成功';
+      document.getElementById('feedbackText').textContent = text || '当前配置已经写入系统。';
+      overlay.classList.add('show');
+      document.getElementById('feedbackCloseBtn').focus();
+    }
+
+    function hideFeedbackModal() {
+      document.getElementById('feedbackOverlay').classList.remove('show');
+    }
+
+    function setTriggerStatus(message, type='loading') {
+      const node = document.getElementById('triggerStatus');
+      if (!node) return;
+      node.className = `trigger-status show ${type}`;
+      node.textContent = message || '';
+    }
+
+    function setTriggerButtonsDisabled(disabled) {
+      ['triggerHealthBtn', 'triggerMainBtn'].forEach(id => {
+        const button = document.getElementById(id);
+        if (button) button.disabled = !!disabled;
+      });
+    }
+
+    function setActionStatus(message, type = 'loading') {
+      const node = document.getElementById('actionStatus');
+      if (!node) return;
+      if (!message) {
+        node.className = 'trigger-status';
+        node.textContent = '';
+        return;
+      }
+      node.className = `trigger-status show ${type}`;
+      node.textContent = message;
+    }
+
+    function setMailTestStatus(message, type = 'loading') {
+      const node = document.getElementById('mailTestStatus');
+      if (!node) return;
+      if (!message) {
+        node.className = 'mail-test-status';
+        node.textContent = '';
+        return;
+      }
+      node.className = `mail-test-status show ${type}`;
+      node.textContent = message;
+    }
+
+    function stopTriggerProgressPolling() {
+      if (triggerProgressTimer) {
+        clearTimeout(triggerProgressTimer);
+        triggerProgressTimer = null;
+      }
+    }
+
+    function setTriggerProgressContent(html) {
+      const node = document.getElementById('triggerProgress');
+      if (!node) return;
+      node.innerHTML = html || '';
+    }
+
+    function getExpectedRunSteps(runType, steps = []) {
+      const predefined = RUN_STEP_ORDER[runType] || [];
+      if (predefined.length) return predefined;
+      return steps.map(step => step.name).filter(Boolean);
+    }
+
+    function getStepVisualState(stepName, stepMap) {
+      const step = stepMap.get(stepName);
+      if (!step) return 'pending';
+      if (step.status === 'running') return 'active';
+      if (step.status === 'failed') return 'fail';
+      if (step.status === 'success') return 'done';
+      return 'pending';
+    }
+
+    function renderTriggerProgress(data) {
+      const run = data?.run || {};
+      const steps = Array.isArray(data?.steps) ? data.steps : [];
+      const expectedSteps = getExpectedRunSteps(run.run_type, steps);
+      const stepMap = new Map(steps.map(step => [step.name, step]));
+      const runningStep = steps.find(step => step.status === 'running');
+      const failedStep = [...steps].reverse().find(step => step.status === 'failed');
+      const lastFinishedStep = [...steps].reverse().find(step => step.status === 'success');
+      const maintenanceActivity = getMaintenanceActivity(runningStep);
+      const currentStep = maintenanceActivity
+        ? `${runningStep?.name || 'SOURCE_MAINTENANCE'} · ${maintenanceActivity}`
+        : (runningStep?.name || failedStep?.name || lastFinishedStep?.name || '等待启动');
+      const completedCount = expectedSteps.filter(name => {
+        const status = stepMap.get(name)?.status;
+        return status === 'success' || status === 'failed';
+      }).length;
+      const visualCompleted = completedCount + (runningStep ? 0.5 : 0);
+      const totalCount = Math.max(expectedSteps.length, 1);
+      const progressPercent = Math.max(4, Math.min(100, (visualCompleted / totalCount) * 100));
+      const statusLabel = STATUS_LABELS[run.status] || run.status || '-';
+      const timeLabel = run.finished_at
+        ? `完成时间：${formatDateTime(run.finished_at)}`
+        : `开始时间：${formatDateTime(run.started_at)}`;
+      const stepRows = expectedSteps.map((stepName, index) => {
+        const actualStep = stepMap.get(stepName);
+        const state = getStepVisualState(stepName, stepMap);
+        const status = actualStep?.status || (state === 'active' ? 'running' : 'pending');
+        return `
+          <div class="trigger-step-row ${state}">
+            <div class="trigger-step-index">${index + 1}</div>
+            <div class="trigger-step-name">${escapeHtml(stepName)}</div>
+            <span class="status-chip ${statusClass(status)}">${escapeHtml(STATUS_LABELS[status] || status)}</span>
+          </div>
+        `;
+      }).join('');
+      const note = run.error_message
+        ? `错误信息：${run.error_message}`
+        : (runningStep ? '系统正在后台执行，下面的步骤状态会自动刷新。' : '任务已进入队列，等待步骤开始。');
+      return `
+        <div class="trigger-progress-card">
+          <div class="trigger-progress-head">
+            <div>
+              <h4 class="trigger-progress-title">${escapeHtml(formatRunType(run.run_type))} 当前进展</h4>
+              <div class="trigger-progress-sub">Run ID: <span class="mono">${escapeHtml(run.id || activeTriggerRunId || '-')}</span> | ${escapeHtml(timeLabel)}</div>
+            </div>
+            <span class="status-chip ${statusClass(run.status)}">${escapeHtml(statusLabel)}</span>
+          </div>
+          <div class="trigger-progress-meta">
+            <div class="trigger-progress-stat">
+              <span>当前步骤</span>
+              <strong>${escapeHtml(currentStep)}</strong>
+            </div>
+            <div class="trigger-progress-stat">
+              <span>步骤完成度</span>
+              <strong>${completedCount} / ${expectedSteps.length || steps.length || 1}</strong>
+            </div>
+            <div class="trigger-progress-stat">
+              <span>任务总耗时</span>
+              <strong>${diffDuration(run.started_at, run.finished_at)}</strong>
+            </div>
+          </div>
+          <div class="trigger-progress-bar">
+            <div class="trigger-progress-fill" style="width:${progressPercent.toFixed(2)}%"></div>
+          </div>
+          <div class="trigger-step-list">
+            ${stepRows || '<div class="detail-empty" style="min-height:96px">等待任务开始生成步骤...</div>'}
+          </div>
+          <div class="trigger-progress-note">${escapeHtml(note)}</div>
+        </div>
+      `;
+    }
+
+    async function pollTriggerProgress(runId) {
+      if (!runId) return null;
+      activeTriggerRunId = runId;
+      try {
+        const data = await api(`/api/runs/${runId}`);
+        const steps = Array.isArray(data?.steps) ? data.steps : [];
+        const runningStep = steps.find(step => step && step.status === 'running');
+        setTriggerProgressContent(renderTriggerProgress(data));
+        const actionInput = document.getElementById('action_run_id');
+        if (actionInput) actionInput.value = runId;
+        if (activeModule === 'module-detail') {
+          const detailNode = document.getElementById('runDetail');
+          if (detailNode) detailNode.innerHTML = renderRunDetail(data);
+        }
+        if (activeModule === 'module-sources' || runningStep?.name === 'SOURCE_MAINTENANCE') {
+          await loadSourceHealth();
+        }
+        if (!TERMINAL_RUN_STATUSES.has(data?.run?.status)) {
+          triggerProgressTimer = setTimeout(() => pollTriggerProgress(runId), 2000);
+        } else {
+          stopTriggerProgressPolling();
+          await loadRuns();
+          await loadToken();
+          setTriggerStatus(`任务已结束，Run ID: ${runId}，最终状态：${STATUS_LABELS[data.run.status] || data.run.status}`, data.run.status === 'failed' ? 'error' : 'success');
+        }
+        return data;
+      } catch (err) {
+        stopTriggerProgressPolling();
+        const message = err && err.message ? err.message : String(err || '未知错误');
+        setTriggerProgressContent(renderRunDetailState(`进度获取失败：${message}`, 'error', runId));
+        console.error('pollTriggerProgress failed', runId, err);
+        return null;
+      }
+    }
+
+    function startTriggerProgressPolling(runId) {
+      stopTriggerProgressPolling();
+      activeTriggerRunId = runId || '';
+      setTriggerProgressContent(renderRunDetailState('任务已提交，正在等待后台执行器启动...', 'loading', runId));
+      triggerProgressTimer = setTimeout(() => pollTriggerProgress(runId), 250);
+    }
+
+    async function saveMap(values, successText='当前配置已经写入系统。') {
+      await api('/api/settings', 'PUT', {values});
+      await loadSettings();
+      showFeedbackModal('保存成功', successText);
+    }
+
+    async function saveScheduling() {
+      await saveMap({
+        'general.health_cron': timeToCron(document.getElementById('healthCron').value.trim(), '30 8 * * *'),
+        'general.main_cron': timeToCron(document.getElementById('mainCron').value.trim(), '0 9 * * *'),
+        'general.top_n': document.getElementById('topN').value.trim(),
+        'general.top_k': document.getElementById('topK').value.trim(),
+        'quality.threshold': document.getElementById('qualityThreshold').value.trim()
+      }, '调度与质量配置已保存。');
+    }
+
+    async function saveModels() {
+      const values = {};
+      MODEL_ROLES.forEach(role => Object.assign(values, collectRoleSettings(role)));
+      await saveMap(values, '模型配置已保存。');
+    }
+
+    async function saveWechat() {
+      await saveMap({
+        'wechat.app_id': document.getElementById('wechat_app_id').value.trim(),
+        'wechat.app_secret': document.getElementById('wechat_app_secret').value.trim(),
+        'wechat.author': document.getElementById('wechat_author').value.trim()
+      }, '公众号配置已保存。');
+    }
+
+    async function saveMail() {
+      setMailTestStatus('');
+      await saveMap({
+        'mail.smtp_host': document.getElementById('smtp_host').value.trim(),
+        'mail.smtp_port': document.getElementById('smtp_port').value.trim(),
+        'mail.smtp_tls': document.getElementById('smtp_tls').value.trim(),
+        'mail.daily_enabled': document.getElementById('mail_daily_enabled').value.trim(),
+        'mail.smtp_user': document.getElementById('smtp_user').value.trim(),
+        'mail.smtp_password': document.getElementById('smtp_password').value.trim(),
+        'mail.from_address': document.getElementById('mail_from').value.trim(),
+        'mail.to_addresses': document.getElementById('mail_to').value.trim(),
+        'mail.subject_prefix': document.getElementById('mail_subject_prefix').value.trim()
+      }, 'SMTP 与日报配置已保存。');
+    }
+
+    async function sendTestMail() {
+      setMailTestStatus('正在发送测试邮件，请稍候...', 'loading');
+      try {
+        const resp = await api('/api/mail/test', 'POST');
+        const result = resp.result || {};
+        if (resp.ok) {
+          setMailTestStatus(`测试邮件已发送成功，收件人数：${result.count || 0}。请检查收件箱和垃圾邮件箱。`, 'success');
+          showFeedbackModal('测试邮件已发送', '请检查收件箱和垃圾邮件箱确认是否收到。');
+        } else {
+          setMailTestStatus(`测试邮件发送失败：${result.reason || '未知错误'}`, 'error');
+        }
+      } catch (err) {
+        setMailTestStatus(`测试邮件发送失败：${err.message}`, 'error');
+      }
+    }
+
+    async function saveProxy() {
+      const values = {
+        'proxy.enabled': document.getElementById('proxy_enabled').value.trim(),
+        'proxy.all_proxy': document.getElementById('proxy_all').value.trim(),
+        'proxy.share_link': document.getElementById('proxy_share').value.trim()
+      };
+      const resp = await api('/api/settings', 'PUT', {values});
+      await loadSettings();
+      const auto = resp.auto_proxy || {};
+      if (Object.keys(auto).length > 0) {
+        document.getElementById('proxyAutoInfo').textContent = `自动解析完成：${auto['proxy.node_summary'] || ''}`;
+      } else {
+        document.getElementById('proxyAutoInfo').textContent = '';
+      }
+      showFeedbackModal('保存成功', '代理配置已保存。');
+    }
+
+    async function previewProxyParse() {
+      const share = document.getElementById('proxy_share').value.trim();
+      if (!share) return alert('请先填写分享链接');
+      const allProxy = document.getElementById('proxy_all').value.trim();
+      const resp = await api('/api/proxy/parse', 'POST', {values: {'proxy.share_link': share, 'proxy.all_proxy': allProxy}});
+      const auto = resp.auto_proxy || {};
+      document.getElementById('proxyAutoInfo').textContent = `解析结果：${auto['proxy.node_summary'] || ''} | all_proxy=${auto['proxy.all_proxy'] || ''}`;
+    }
+
+    async function triggerRun(type, button = null) {
+      const originalText = button ? button.textContent : '';
+      const label = type === 'health' ? '健康检查' : '主任务';
+      try {
+        setTriggerButtonsDisabled(true);
+        if (button) button.textContent = `正在执行 ${label}...`;
+        setTriggerStatus(`正在提交${label}，系统会在后台启动任务并实时展示当前进展。`, 'loading');
+        setTriggerProgressContent('');
+        const resp = await api('/api/runs/trigger', 'POST', {run_type: type, trigger_source: 'manual-ui'});
+        setTriggerStatus(`已成功提交${label}，Run ID：${resp.run_id}。当前进展会在下方自动刷新。`, 'success');
+        const actionInput = document.getElementById('action_run_id');
+        if (actionInput) actionInput.value = resp.run_id;
+        await loadRuns();
+        startTriggerProgressPolling(resp.run_id);
+      } catch (err) {
+        setTriggerStatus(`${label}触发失败：${err.message}`, 'error');
+        alert(`${label}触发失败：${err.message}`);
+      } finally {
+        setTriggerButtonsDisabled(false);
+        if (button) button.textContent = originalText || (type === 'health' ? '执行 08:30 健康检查' : '执行 09:00 主任务');
+      }
+    }
+
+    async function runAction(action, explicitRunId = '') {
+      const actionInput = document.getElementById('action_run_id');
+      const runId = String(explicitRunId || actionInput?.value || '').trim();
+      if (!runId) return alert('请先填写 run_id');
+      if (actionInput && runId) actionInput.value = runId;
+      const actionLabelMap = {
+        rerun_full: '重跑本轮（全流程）',
+        retry_from_failed_step: '从失败步骤续跑',
+        retry_wechat_draft: '仅重传微信草稿',
+        regenerate_article: '仅重新生成文章',
+        regenerate_cover: '仅重新生成封面'
+      };
+      const actionLabel = actionLabelMap[action] || action;
+      setActionStatus(`正在执行：${actionLabel}...`, 'loading');
+      try {
+        const data = await api(`/api/runs/${runId}/action`, 'POST', {action});
+        setActionStatus(`任务动作已提交，新的 Run ID：${data.new_run_id}`, 'success');
+        if (actionInput) actionInput.value = data.new_run_id;
+        await loadRuns();
+        await loadToken();
+        startTriggerProgressPolling(data.new_run_id);
+        await loadRunDetail(data.new_run_id, false, true);
+      } catch (err) {
+        setActionStatus(`任务动作执行失败：${err.message}`, 'error');
+      }
+    }
+
+    async function init() {
+      const initialModule = location.hash && document.getElementById(location.hash.slice(1))
+        ? location.hash.slice(1)
+        : 'module-trigger';
+      document.getElementById('feedbackOverlay').addEventListener('click', (event) => {
+        if (event.target.id === 'feedbackOverlay') hideFeedbackModal();
+      });
+      document.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') hideFeedbackModal();
+      });
+      setActiveModule(initialModule);
+      document.getElementById('runsKeywordFilter').addEventListener('input', () => { runsPage = 1; renderRunsTable(); syncRunDetailWithFilters(); });
+      document.getElementById('runsStatusFilter').addEventListener('change', () => { runsPage = 1; renderRunsTable(); syncRunDetailWithFilters(); });
+      document.getElementById('runsTypeFilter').addEventListener('change', () => { runsPage = 1; renderRunsTable(); syncRunDetailWithFilters(); });
+      document.getElementById('runsSortOrder').addEventListener('change', () => { runsPage = 1; renderRunsTable(); syncRunDetailWithFilters(); });
+      await loadSettings();
+      await loadRuns();
+      await loadToken();
+      await loadStorage();
+      await loadSourceHealth();
+    }
+    init().catch(err => alert(err.message));
+  </script>
+</body>
+</html>
+
+
+
+

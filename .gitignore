@@ -1,0 +1,13 @@
+__pycache__/
+.venv/
+*.pyc
+*.log
+data/
+dist/
+logs/
+.env
+output/
+tmp/
+*.db
+*.sqlite3
+tmp_run_detail.json

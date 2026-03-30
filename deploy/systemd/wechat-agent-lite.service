@@ -1,0 +1,18 @@
+[Unit]
+Description=wechat-agent-lite service
+After=network.target
+
+[Service]
+Type=simple
+User=ShadowKun
+WorkingDirectory=/opt/wechat-agent-lite
+EnvironmentFile=/opt/wechat-agent-lite/.env
+ExecStart=/opt/wechat-agent-lite/.venv/bin/python /opt/wechat-agent-lite/run.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/wechat-agent-lite/service.log
+StandardError=append:/var/log/wechat-agent-lite/service.err.log
+
+[Install]
+WantedBy=multi-user.target
+

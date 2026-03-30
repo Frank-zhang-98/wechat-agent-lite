@@ -1,0 +1,1 @@
+﻿https://github.com/XTLS/Xray-core/releases/download/v26.2.6/Xray-linux-64.zip
