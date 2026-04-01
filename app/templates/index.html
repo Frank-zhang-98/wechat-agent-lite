@@ -2310,7 +2310,7 @@
     const RUNS_PAGE_SIZE = 8;
     const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'partial_success']);
     const RUN_STEP_ORDER = {
-      main: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE', 'FETCH', 'DEDUP', 'RULE_SCORE', 'RERANK', 'SELECT', 'SOURCE_ENRICH', 'FACT_PACK', 'FACT_COMPRESS', 'WRITE', 'QUALITY_CHECK', 'COVER_5D', 'COVER_GEN', 'COVER_CHECK', 'WECHAT_DRAFT'],
+      main: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE', 'FETCH', 'DEDUP', 'RULE_SCORE', 'RERANK', 'SELECT', 'SOURCE_ENRICH', 'FACT_PACK', 'FACT_COMPRESS', 'WRITE', 'QUALITY_CHECK', 'ARTICLE_RENDER', 'COVER_5D', 'COVER_GEN', 'COVER_CHECK', 'WECHAT_DRAFT'],
       health: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE']
     };
 
@@ -2918,6 +2918,8 @@
       const sourceMaintenance = summary.source_maintenance || {};
       const wechat = summary.wechat || {};
       const titlePlan = summary.title_plan || {};
+      const articleLayout = summary.article_layout || {};
+      const articleRender = summary.article_render || {};
       const articleMarkdown = run.article_markdown || '';
       const coverUrl = run.cover_url || '';
       const summarySections = [];
@@ -3078,6 +3080,40 @@
         `);
       }
 
+      if (Object.keys(articleLayout).length) {
+        summarySections.push(`
+          <section class="summary-block">
+            <h5>文章模板</h5>
+            <div class="summary-kv-grid">
+              <div class="summary-mini-kv">
+                <span>模板名称</span>
+                <strong>${escapeHtml(articleLayout.label || articleLayout.name || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>模板键</span>
+                <strong>${escapeHtml(articleLayout.name || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>模板来源</span>
+                <strong>${escapeHtml(articleLayout.source || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>文章类型</span>
+                <strong>${escapeHtml(articleLayout.content_type || summary.content_type || '-')}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>HTML 长度</span>
+                <strong>${escapeHtml(articleRender.html_length ?? 0)}</strong>
+              </div>
+              <div class="summary-mini-kv">
+                <span>区块数量</span>
+                <strong>${escapeHtml(articleRender.block_count ?? 0)}</strong>
+              </div>
+            </div>
+          </section>
+        `);
+      }
+
       if (Object.keys(wechat).length) {
         summarySections.push(`
           <section class="summary-block">
@@ -3219,6 +3255,7 @@
                   <div class="detail-kv"><span>结束时间</span><strong>${formatDateTime(run.finished_at)}</strong></div>
                   <div class="detail-kv"><span>任务类型</span><strong>${escapeHtml(formatRunType(run.run_type))}</strong></div>
                   <div class="detail-kv"><span>草稿状态</span><strong>${escapeHtml(run.draft_status || '-')}</strong></div>
+                  <div class="detail-kv"><span>文章模板</span><strong>${escapeHtml(articleLayout.label || articleLayout.name || '-')}</strong></div>
                   <div class="detail-kv"><span>失败兜底</span><strong>${run.quality_fallback_used ? '已启用' : '未启用'}</strong></div>
                   <div class="detail-kv"><span>错误信息</span><strong>${escapeHtml(run.error_message || '-')}</strong></div>
                 </div>

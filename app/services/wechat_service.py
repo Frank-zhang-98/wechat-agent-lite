@@ -38,6 +38,7 @@ class WeChatService:
         self,
         title: str,
         markdown_content: str,
+        html_content: str = "",
         source_url: str = "",
         cover_image_path: str = "",
     ) -> WeChatDraftResult:
@@ -63,12 +64,12 @@ class WeChatService:
         sent_title = self._prepare_title(title)
         sent_author = self._prepare_author(author)
         sent_digest = self._digest(markdown_content)
-        html_content = self._markdown_to_html(markdown_content)
+        final_html = str(html_content or "").strip() or self._markdown_to_html(markdown_content)
         article = {
             "title": sent_title,
             "author": sent_author,
             "digest": sent_digest,
-            "content": html_content,
+            "content": final_html,
             "content_source_url": content_source_url,
             "thumb_media_id": thumb_media_id,
             "need_open_comment": 0,

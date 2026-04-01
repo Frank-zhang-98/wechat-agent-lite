@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import CONFIG
 from app.models import Run, RunStatus, RunStep, StepStatus
+from app.services.article_render_service import ArticleRenderService
 from app.services.fetch_service import FetchService
 from app.services.llm_gateway import LLMGateway
 from app.services.mail_service import MailService
@@ -45,6 +46,7 @@ class Orchestrator:
         self.fetch = FetchService(
             all_proxy=self.settings.get("proxy.all_proxy", "") if self.settings.get_bool("proxy.enabled", False) else ""
         )
+        self.article_renderer = ArticleRenderService()
         self.mail = MailService(self.settings)
         self.wechat = WeChatService(self.settings)
         self.writing_templates = WritingTemplateService()
@@ -157,6 +159,7 @@ class Orchestrator:
         self._execute_step(run, "FACT_COMPRESS", self._step_fact_compress, ctx, self._policy_generate())
         self._execute_step(run, "WRITE", self._step_write_v2, ctx, self._policy_generate())
         self._execute_step(run, "QUALITY_CHECK", self._step_quality_check, ctx, self._policy_generate())
+        self._execute_step(run, "ARTICLE_RENDER", self._step_article_render, ctx, self._policy_generate())
         self._execute_step(run, "COVER_5D", self._step_cover_5d, ctx, self._policy_generate())
         self._execute_step(run, "COVER_GEN", self._step_cover_gen, ctx, self._policy_generate())
         self._execute_step(run, "COVER_CHECK", self._step_cover_check, ctx, self._policy_generate())
@@ -184,6 +187,8 @@ class Orchestrator:
                 "source_pack": ctx.get("source_pack", {}),
                 "content_type": ctx.get("content_type", ""),
                 "target_audience": ctx.get("target_audience", ""),
+                "article_layout": ctx.get("article_layout", {}),
+                "article_render": ctx.get("article_render", {}),
                 "fact_pack": ctx.get("fact_pack", {}),
                 "fact_compress": ctx.get("fact_compress", {}),
                 "title_plan": ctx.get("title_plan", {}),
@@ -216,6 +221,7 @@ class Orchestrator:
             self._execute_step(run, "FACT_COMPRESS", self._step_fact_compress, ctx, self._policy_generate())
             self._execute_step(run, "WRITE", self._step_write_v2, ctx, self._policy_generate())
             self._execute_step(run, "QUALITY_CHECK", self._step_quality_check, ctx, self._policy_generate())
+            self._execute_step(run, "ARTICLE_RENDER", self._step_article_render, ctx, self._policy_generate())
             run.article_title = ctx.get("article_title", "")
             run.article_markdown = ctx.get("article_markdown", "")
             run.quality_score = float(ctx.get("quality_score", 0))
@@ -226,6 +232,8 @@ class Orchestrator:
                     "source_pack": ctx.get("source_pack", {}),
                     "content_type": ctx.get("content_type", ""),
                     "target_audience": ctx.get("target_audience", ""),
+                    "article_layout": ctx.get("article_layout", {}),
+                    "article_render": ctx.get("article_render", {}),
                     "fact_pack": ctx.get("fact_pack", {}),
                     "fact_compress": ctx.get("fact_compress", {}),
                     "quality_scores": ctx.get("quality_scores", []),
@@ -271,12 +279,14 @@ class Orchestrator:
         summary = self._parse_summary_json(base.summary_json)
         selected_topic = dict(summary.get("selected_topic") or {})
         cover_asset = self._resolve_cover_asset(base=base, summary=summary)
+        article_html = self._resolve_article_html(base=base, summary=summary)
         ctx: dict[str, Any] = {
             "failed_logs": [],
             "selected_topic": selected_topic,
             "article_title": str(base.article_title or selected_topic.get("title") or "").strip(),
             "wechat_title": str((summary.get("title_plan") or {}).get("wechat_title") or base.article_title or "").strip(),
             "article_markdown": base.article_markdown,
+            "article_html": article_html,
             "cover_asset": cover_asset,
         }
 
@@ -313,6 +323,8 @@ class Orchestrator:
                     "wechat_title": ctx.get("wechat_title", ""),
                     "source": "reused",
                 },
+                "article_layout": summary.get("article_layout", {}),
+                "article_render": summary.get("article_render", {}),
                 "cover_asset": cover_asset,
                 "cover_5d": summary.get("cover_5d", {}),
                 "wechat": ctx.get("wechat_result", {}),
@@ -429,6 +441,25 @@ class Orchestrator:
                 cover_asset.setdefault("status", "reused")
                 return cover_asset
         return cover_asset
+
+    def _resolve_article_html(self, base: Run, summary: dict[str, Any]) -> str:
+        article_render = dict(summary.get("article_render") or {})
+        html_path = str(article_render.get("html_path") or "").strip()
+        if html_path:
+            candidate = Path(html_path)
+            if candidate.exists() and candidate.is_file():
+                try:
+                    return candidate.read_text(encoding="utf-8")
+                except Exception:
+                    return ""
+        run_dir = CONFIG.data_dir / "runs" / base.id
+        candidate = run_dir / "article.html"
+        if candidate.exists() and candidate.is_file():
+            try:
+                return candidate.read_text(encoding="utf-8")
+            except Exception:
+                return ""
+        return ""
 
     @staticmethod
     def _clip_text(value: Any, limit: int = 6000) -> str:
@@ -1166,6 +1197,53 @@ class Orchestrator:
             },
         )
 
+    def _step_article_render(self, run: Run, ctx: dict[str, Any]) -> None:
+        article_markdown = str(ctx.get("article_markdown") or "").strip()
+        if not article_markdown:
+            raise RuntimeError("article_markdown is empty")
+        article_title = str(ctx.get("article_title") or "").strip()
+        content_type = str(ctx.get("content_type") or "tool_review").strip() or "tool_review"
+        audience = str(ctx.get("target_audience") or "").strip()
+        rendered = self.article_renderer.render(
+            article_markdown,
+            article_title=article_title,
+            content_type=content_type,
+            target_audience=audience,
+        )
+        html_path = self.article_renderer.save_html(rendered, run.id)
+        ctx["article_layout"] = {
+            "name": rendered.layout_name,
+            "label": rendered.layout_label,
+            "description": rendered.description,
+            "source": rendered.source,
+            "content_type": content_type,
+        }
+        ctx["article_render"] = {
+            "html_path": html_path,
+            "html_length": len(rendered.html),
+            "block_count": rendered.block_count,
+            "html_excerpt": self._clip_text(rendered.html, 1200),
+        }
+        ctx["article_html"] = rendered.html
+        self._set_step_audit(
+            ctx,
+            "ARTICLE_RENDER",
+            {
+                "outputs": [
+                    {
+                        "title": "文章模板信息",
+                        "text": self._clip_text(json.dumps(ctx["article_layout"], ensure_ascii=False, indent=2), 4000),
+                        "language": "json",
+                    },
+                    {
+                        "title": "最终 HTML 预览",
+                        "text": self._clip_text(rendered.html, 4000),
+                        "language": "html",
+                    },
+                ]
+            },
+        )
+
     def _step_cover_5d(self, run: Run, ctx: dict[str, Any]) -> None:
         prompt = (
             "Generate cover 5D scores in JSON with keys: 主题主体, 场景构图, 视觉风格, 色彩光线, 文案层级. "
@@ -1268,6 +1346,7 @@ class Orchestrator:
         result = self.wechat.publish_draft(
             title=ctx.get("wechat_title") or ctx.get("article_title", "AI 热点"),
             markdown_content=ctx.get("article_markdown", ""),
+            html_content=ctx.get("article_html", ""),
             source_url=source_url,
             cover_image_path=str(cover_asset.get("path", "") or ""),
         )
@@ -1744,6 +1823,24 @@ class Orchestrator:
             }
             payload["items"] = [f"第 {idx + 1} 轮：{score}" for idx, score in enumerate(scores)]
             payload["raw"] = {"quality_scores": scores}
+        elif name == "ARTICLE_RENDER":
+            article_layout = dict(ctx.get("article_layout") or {})
+            article_render = dict(ctx.get("article_render") or {})
+            payload["summary"] = {
+                "模板名称": article_layout.get("label") or article_layout.get("name") or "-",
+                "模板键": article_layout.get("name") or "-",
+                "模板来源": article_layout.get("source") or "-",
+                "文章类型": article_layout.get("content_type") or ctx.get("content_type") or "-",
+                "HTML 长度": article_render.get("html_length") or 0,
+                "块数量": article_render.get("block_count") or 0,
+                "HTML 文件": article_render.get("html_path") or "-",
+            }
+            excerpt = str(article_render.get("html_excerpt") or "").strip()
+            payload["items"] = [excerpt] if excerpt else []
+            payload["raw"] = {
+                "article_layout": article_layout,
+                "article_render": article_render,
+            }
         elif name == "COVER_5D":
             cover_5d = dict(ctx.get("cover_5d") or {})
             payload["summary"] = {key: value for key, value in cover_5d.items()}
@@ -1801,6 +1898,7 @@ class Orchestrator:
             "SELECT": f"已选定主题：{(ctx.get('selected_topic') or {}).get('title', '-')}",
             "WRITE": f"文章草稿已生成：{ctx.get('article_title') or '-'}",
             "QUALITY_CHECK": f"质检完成，最终得分 {ctx.get('quality_score') or 0}",
+            "ARTICLE_RENDER": f"文章 HTML 已渲染：{(ctx.get('article_layout') or {}).get('label', '-')}",
             "COVER_5D": "封面 5D 评分已生成",
             "COVER_GEN": "封面提示词已生成",
             "COVER_CHECK": "封面质量校验已完成",
@@ -1830,6 +1928,7 @@ class Orchestrator:
             "SELECT": f"已选定主题：{(ctx.get('selected_topic') or {}).get('title', '-')}",
             "WRITE": f"文章草稿已生成：{ctx.get('article_title') or '-'}",
             "QUALITY_CHECK": f"质检完成，最终得分 {ctx.get('quality_score') or 0}",
+            "ARTICLE_RENDER": f"文章模板已应用：{(ctx.get('article_layout') or {}).get('label', '-')}",
             "COVER_5D": "封面 5 维评估已生成",
             "COVER_GEN": "封面提示词已生成",
             "COVER_CHECK": "封面质量校验已完成",

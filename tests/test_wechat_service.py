@@ -80,6 +80,24 @@ class WeChatServiceTests(unittest.TestCase):
 
     @patch("app.services.wechat_service.requests.post")
     @patch("app.services.wechat_service.requests.get")
+    def test_publish_draft_prefers_supplied_html_content(self, get_mock, post_mock) -> None:
+        get_mock.return_value = FakeResponse({"access_token": "token"})
+        post_mock.return_value = FakeResponse({"media_id": "draft-id"})
+
+        custom_html = "<div><p>custom-rendered-html</p></div>"
+        with patch.object(self.service, "_resolve_thumb_media_id", return_value=("thumb-123", "")):
+            result = self.service.publish_draft(
+                title="中文标题",
+                markdown_content="# 中文标题\n\n正文",
+                html_content=custom_html,
+            )
+
+        self.assertTrue(result.success)
+        body = post_mock.call_args.kwargs["data"].decode("utf-8")
+        self.assertIn("custom-rendered-html", body)
+
+    @patch("app.services.wechat_service.requests.post")
+    @patch("app.services.wechat_service.requests.get")
     def test_publish_draft_retries_without_digest_on_45004(self, get_mock, post_mock) -> None:
         get_mock.return_value = FakeResponse({"access_token": "token"})
         post_mock.side_effect = [

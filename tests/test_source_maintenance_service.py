@@ -479,6 +479,9 @@ class OrchestratorSourceMaintenanceTests(unittest.TestCase):
             self.orch._run_main(run, ctx)
 
         self.assertEqual(executed_steps[:3], ["HEALTH_CHECK", "SOURCE_MAINTENANCE", "FETCH"])
+        self.assertIn("ARTICLE_RENDER", executed_steps)
+        self.assertLess(executed_steps.index("QUALITY_CHECK"), executed_steps.index("ARTICLE_RENDER"))
+        self.assertLess(executed_steps.index("ARTICLE_RENDER"), executed_steps.index("COVER_5D"))
 
     def test_main_flow_skips_source_maintenance_when_disabled(self) -> None:
         run = self.orch.create_run(run_type="main", trigger_source="test", status=RunStatus.running.value)
