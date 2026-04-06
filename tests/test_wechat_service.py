@@ -1,4 +1,6 @@
 import unittest
+import tempfile
+from pathlib import Path
 from unittest.mock import patch
 
 from app.services.wechat_service import WeChatService
@@ -121,6 +123,62 @@ class WeChatServiceTests(unittest.TestCase):
         second_body = post_mock.call_args_list[1].kwargs["data"].decode("utf-8")
         self.assertIn("\"digest\":", first_body)
         self.assertNotIn("\"digest\":", second_body)
+
+    @patch("app.services.wechat_service.requests.post")
+    @patch("app.services.wechat_service.requests.get")
+    def test_publish_draft_uploads_inline_images_for_article_content(self, get_mock, post_mock) -> None:
+        get_mock.return_value = FakeResponse({"access_token": "token"})
+        post_mock.side_effect = [
+            FakeResponse({"url": "https://mmbiz.qpic.cn/test-inline.png"}),
+            FakeResponse({"media_id": "draft-id"}),
+        ]
+        html_content = '<p>正文</p><figure><img src="data:image/png;base64,aGVsbG8=" alt="img" /></figure>'
+
+        with patch.object(self.service, "_resolve_thumb_media_id", return_value=("thumb-123", "")):
+            result = self.service.publish_draft(
+                title="中文标题",
+                markdown_content="# 中文标题\n\n正文",
+                html_content=html_content,
+            )
+
+        self.assertTrue(result.success)
+        upload_call = post_mock.call_args_list[0]
+        self.assertIn("/media/uploadimg", upload_call.args[0])
+        draft_body = post_mock.call_args_list[-1].kwargs["data"].decode("utf-8")
+        self.assertIn("https://mmbiz.qpic.cn/test-inline.png", draft_body)
+        self.assertNotIn("data:image/png;base64", draft_body)
+
+    @patch("app.services.wechat_service.requests.post")
+    @patch("app.services.wechat_service.requests.get")
+    def test_publish_draft_uploads_local_image_paths_for_article_content(self, get_mock, post_mock) -> None:
+        get_mock.return_value = FakeResponse({"access_token": "token"})
+        post_mock.side_effect = [
+            FakeResponse({"url": "https://mmbiz.qpic.cn/test-local.png"}),
+            FakeResponse({"media_id": "draft-id"}),
+        ]
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            image_path = Path(tmpdir) / "illustration.png"
+            image_path.write_bytes(
+                b"\x89PNG\r\n\x1a\n"
+                b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89"
+                b"\x00\x00\x00\x0cIDATx\x9cc\xf8\xff\xff?\x00\x05\xfe\x02\xfeA\x89\x17\x9b"
+                b"\x00\x00\x00\x00IEND\xaeB`\x82"
+            )
+            html_content = f'<p>正文</p><figure><img src="{image_path}" alt="img" /></figure>'
+
+            with patch.object(self.service, "_resolve_thumb_media_id", return_value=("thumb-123", "")):
+                result = self.service.publish_draft(
+                    title="中文标题",
+                    markdown_content="# 中文标题\n\n正文",
+                    html_content=html_content,
+                )
+
+        self.assertTrue(result.success)
+        upload_call = post_mock.call_args_list[0]
+        self.assertIn("/media/uploadimg", upload_call.args[0])
+        draft_body = post_mock.call_args_list[-1].kwargs["data"].decode("utf-8")
+        self.assertIn("https://mmbiz.qpic.cn/test-local.png", draft_body)
 
 
 if __name__ == "__main__":

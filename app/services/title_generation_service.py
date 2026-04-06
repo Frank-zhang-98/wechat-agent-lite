@@ -428,12 +428,107 @@ class TitleGenerationService:
         for word in self.CLICKBAIT_WORDS:
             cleaned = cleaned.replace(word, "")
         cleaned = re.sub(r"(：实战解读|：深度解读|：落地建议|：完整指南)$", "", cleaned).strip()
+        cleaned = self._compact_wechat_title(cleaned)
         cleaned = self._truncate_word_boundary(cleaned, self.WECHAT_TITLE_MAX_CHARS)
         cleaned = self._truncate_utf8_bytes(cleaned, self.WECHAT_TITLE_MAX_BYTES)
         cleaned = cleaned.strip("：:- ,.;")
         if not cleaned:
             cleaned = "AI 热点解读"
         return cleaned
+
+    def _compact_wechat_title(self, title: str) -> str:
+        value = self._normalize_spaces(title)
+        if not value or self._fits_wechat_title_limit(value):
+            return value
+
+        candidates: list[str] = []
+        seen: set[str] = set()
+
+        def add(candidate: str) -> None:
+            normalized = self._normalize_spaces(candidate).strip("：:- ,.;！？?，；")
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                candidates.append(normalized)
+
+        add(value)
+        add(re.sub(r"[？?！!]+$", "", value))
+        add(re.sub(r"\s*[（(][^()（）]{1,24}[)）]\s*$", "", value))
+
+        match = re.match(r"^(?P<head>[^：:]{2,24})[：:](?P<tail>.+)$", value)
+        if match:
+            head = match.group("head").strip()
+            tail = match.group("tail").strip()
+            clauses = [item.strip() for item in re.split(r"[，,；;]", tail) if item.strip()]
+
+            add(head)
+            add(f"{head}：{self._strip_wechat_question_prefix(tail)}")
+            for clause in clauses:
+                add(clause)
+                add(self._strip_wechat_question_prefix(clause))
+                add(f"{head}：{clause}")
+                add(f"{head}：{self._strip_wechat_question_prefix(clause)}")
+
+            numeric_phrase = self._extract_numeric_title_phrase(tail)
+            if numeric_phrase:
+                add(f"{head}：{numeric_phrase}")
+
+        best = value
+        best_score = -10**9
+        for candidate in candidates:
+            score = self._score_compact_wechat_candidate(candidate=candidate, original=value)
+            if score > best_score:
+                best_score = score
+                best = candidate
+        return best
+
+    def _score_compact_wechat_candidate(self, *, candidate: str, original: str) -> int:
+        score = self._score_title(candidate, prefer_short=True)
+        if self._fits_wechat_title_limit(candidate):
+            score += 30
+        else:
+            score -= 45
+        original_head = self._title_head_before_colon(original)
+        candidate_head = self._title_head_before_colon(candidate)
+        if original_head and candidate_head == original_head:
+            score += 12
+        if re.search(r"\d", original) and re.search(r"\d", candidate):
+            score += 6
+        if re.search(r"(?:\d+\.\d+|\d+)$", candidate):
+            score -= 14
+        if candidate.endswith(("：", ":", "，", ",", "（", "(")):
+            score -= 18
+        if candidate == original:
+            score += 2
+        return score
+
+    def _fits_wechat_title_limit(self, text: str) -> bool:
+        value = str(text or "").strip()
+        return len(value) <= self.WECHAT_TITLE_MAX_CHARS and len(value.encode("utf-8")) <= self.WECHAT_TITLE_MAX_BYTES
+
+    @staticmethod
+    def _title_head_before_colon(text: str) -> str:
+        value = str(text or "").strip()
+        if "：" in value:
+            return value.split("：", 1)[0].strip()
+        if ":" in value:
+            return value.split(":", 1)[0].strip()
+        return ""
+
+    @staticmethod
+    def _strip_wechat_question_prefix(text: str) -> str:
+        value = str(text or "").strip()
+        value = re.sub(r"^(?:如何|怎么|怎样|为何|为什么|究竟|到底)", "", value)
+        value = re.sub(r"^(?:实现|做到|兼顾|融合|平衡|达到|拿到|做到)", "", value)
+        return value.strip("：:- ,.;！？?，；")
+
+    @staticmethod
+    def _extract_numeric_title_phrase(text: str) -> str:
+        match = re.search(
+            r"(\d+(?:\.\d+)?%?\s*(?:准确率|成本|延迟|性能|效率|提效|速度|参数|节点|步骤|轮|页|秒|分钟|倍|个)?)",
+            str(text or ""),
+            flags=re.IGNORECASE,
+        )
+        return str(match.group(1) or "").strip() if match else ""
 
     @staticmethod
     def _normalize_spaces(text: str) -> str:

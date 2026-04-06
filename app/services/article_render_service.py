@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
+import mimetypes
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,10 +70,17 @@ class ArticleRenderService:
         content_type: str,
         target_audience: str = "",
         layout_name: str = "",
+        illustrations: list[dict[str, Any]] | None = None,
     ) -> RenderedArticle:
         layout = self.resolve_layout(content_type=content_type, explicit_layout=layout_name)
         blocks = self._parse_blocks(markdown_text=markdown_text, article_title=article_title)
-        html_blocks = self._render_blocks(blocks=blocks, layout=layout, content_type=content_type, target_audience=target_audience)
+        html_blocks = self._render_blocks(
+            blocks=blocks,
+            layout=layout,
+            content_type=content_type,
+            target_audience=target_audience,
+            illustrations=illustrations or [],
+        )
         html_output = (
             f'<div style="{self._page_style(layout)}">'
             f'<div style="{self._card_style(layout)}">'
@@ -218,17 +227,27 @@ class ArticleRenderService:
         layout: dict[str, Any],
         content_type: str,
         target_audience: str,
+        illustrations: list[dict[str, Any]],
     ) -> list[str]:
         rendered: list[str] = []
+        pending = [item for item in illustrations if isinstance(item, dict)]
+        inserted_indexes: set[int] = set()
+        section_illustrations: list[dict[str, Any]] = []
+        section_indexes: list[int] = []
+        section_plan = self._plan_illustration_sections(blocks=blocks, illustrations=pending)
 
         lede_used = False
-        for block in blocks:
+        for block_idx, block in enumerate(blocks):
             block_type = block["type"]
+            if block_type in {"h1", "h2", "h3"} and section_illustrations:
+                rendered.extend(self._render_illustration_group(items=section_illustrations, layout=layout))
+                inserted_indexes.update(section_indexes)
+                section_illustrations = []
+                section_indexes = []
             if block_type == "p" and not lede_used and layout.get("use_lede", False):
                 rendered.append(f'<p style="{self._lede_style(layout)}">{self._inline(block["text"], layout)}</p>')
                 lede_used = True
-                continue
-            if block_type == "p":
+            elif block_type == "p":
                 rendered.append(f'<p style="{self._paragraph_style(layout)}">{self._inline(block["text"], layout)}</p>')
             elif block_type == "h1":
                 rendered.append(f'<h1 style="{self._heading_style(layout, 1)}">{self._inline(block["text"], layout)}</h1>')
@@ -251,15 +270,267 @@ class ArticleRenderService:
                 items = "".join(f'<li style="{self._li_style(layout)}">{self._inline(item, layout)}</li>' for item in block["items"])
                 rendered.append(f'<ol style="{self._list_style(layout)}">{items}</ol>')
             elif block_type == "code":
-                code_text = html.escape(block.get("text", "") or "")
-                rendered.append(
-                    f'<pre style="{self._code_style(layout)}"><code>{code_text}</code></pre>'
-                )
+                rendered.append(self._render_code_block(block=block, layout=layout))
             elif block_type == "table":
                 rendered.append(self._render_table(block=block, layout=layout))
             elif block_type == "hr":
                 rendered.append(f'<hr style="{self._hr_style(layout)}" />')
+
+            if block_type in {"h1", "h2", "h3"}:
+                section_indexes = [idx for idx in section_plan.get(block_idx, []) if idx not in inserted_indexes]
+                section_illustrations = [pending[idx] for idx in section_indexes]
+            elif section_illustrations and self._is_illustration_anchor_block(block_type):
+                rendered.extend(self._render_illustration_group(items=section_illustrations, layout=layout))
+                inserted_indexes.update(section_indexes)
+                section_illustrations = []
+                section_indexes = []
+
+        if section_illustrations:
+            rendered.extend(self._render_illustration_group(items=section_illustrations, layout=layout))
+            inserted_indexes.update(section_indexes)
+        for idx, item in enumerate(pending):
+            if idx in inserted_indexes:
+                continue
+            rendered.extend(self._render_illustration_group(items=[item], layout=layout))
         return rendered
+
+    def _render_code_block(self, *, block: dict[str, Any], layout: dict[str, Any]) -> str:
+        language = str(block.get("language", "") or "").strip().lower()
+        code_text = str(block.get("text", "") or "")
+        lines = code_text.split("\n")
+        if not lines:
+            lines = [""]
+        language_badge = ""
+        if language:
+            language_badge = (
+                f'<div style="margin:0 0 10px;color:{layout["muted_color"]};font-size:11px;line-height:1.2;'
+                f'text-transform:uppercase;letter-spacing:0.08em;font-family:Consolas,Monaco,monospace;">'
+                f"{html.escape(language)}"
+                f"</div>"
+            )
+        code_html = "<br/>".join(self._render_code_line(line) for line in lines)
+        return (
+            f'<section style="{self._code_style(layout)}">'
+            f"{language_badge}"
+            f'<code style="display:block;margin:0;white-space:normal;word-break:break-word;overflow-wrap:anywhere;'
+            f'font-family:Consolas,Monaco,monospace;">{code_html}</code>'
+            f"</section>"
+        )
+
+    @staticmethod
+    def _render_code_line(line: str) -> str:
+        expanded = str(line or "").replace("\t", "    ")
+        match = re.match(r"^( +)", expanded)
+        if not expanded:
+            return "&nbsp;"
+        leading = match.group(1) if match else ""
+        body = expanded[len(leading) :]
+        prefix = "&nbsp;" * len(leading)
+        escaped_body = html.escape(body)
+        return f"{prefix}{escaped_body}" if (prefix or escaped_body) else "&nbsp;"
+
+    def _render_illustration(self, *, item: dict[str, Any], layout: dict[str, Any]) -> str:
+        src = self._resolve_illustration_src(str(item.get("path", "") or "").strip())
+        if not src:
+            return ""
+        title = html.escape(str(item.get("title", "") or "").strip())
+        caption = html.escape(str(item.get("caption", "") or "").strip())
+        caption_html = ""
+        if title or caption:
+            title_html = ""
+            if title:
+                title_html = (
+                    f'<div style="margin-bottom:4px;color:{layout["heading_color"]};font-size:15px;line-height:1.5;font-weight:700;">'
+                    f"图解：{title}"
+                    f"</div>"
+                )
+            caption_html = (
+                f'<figcaption style="margin-top:12px;padding:0 4px;color:{layout["muted_color"]};font-size:13px;line-height:1.75;">'
+                f"{title_html}"
+                f"{caption}"
+                f"</figcaption>"
+            )
+        return (
+            f'<figure style="margin:22px auto 30px;max-width:960px;">'
+            f'<img src="{src}" alt="{title or "illustration"}" style="display:block;width:100%;height:auto;border-radius:18px;border:1px solid {layout["border_color"]};background:{layout["card_background"]};box-shadow:0 10px 30px rgba(15,23,42,0.08);" />'
+            f"{caption_html}"
+            f"</figure>"
+        )
+
+    def _render_illustration_group(self, *, items: list[dict[str, Any]], layout: dict[str, Any]) -> list[str]:
+        rendered: list[str] = []
+        bridge = self._render_illustration_bridge(items=items, layout=layout)
+        if bridge:
+            rendered.append(bridge)
+        for item in items:
+            block = self._render_illustration(item=item, layout=layout)
+            if block:
+                rendered.append(block)
+        return rendered
+
+    def _render_illustration_bridge(self, *, items: list[dict[str, Any]], layout: dict[str, Any]) -> str:
+        if not items:
+            return ""
+        if len(items) == 1:
+            text = self._single_illustration_bridge(items[0])
+        else:
+            text = self._multi_illustration_bridge(items)
+        return f'<p style="{self._paragraph_style(layout)}margin-top:8px;">{text}</p>'
+
+    def _single_illustration_bridge(self, item: dict[str, Any]) -> str:
+        focus = html.escape(self._bridge_focus_text(item))
+        title = str(item.get("title", "") or "").strip()
+        caption = str(item.get("caption", "") or "").strip()
+        signal = " ".join([title, caption])
+        if re.search(r"(流程|链路|步骤|阶段|工作流)", signal):
+            return f"下面这张图把 {focus} 的顺序和衔接关系梳理出来了，适合和前文对照着看。"
+        if re.search(r"(架构|模块|分层|节点|支撑)", signal):
+            return f"前面提到的 {focus}，放到图里看层次和分工会更直观。"
+        if re.search(r"(对比|差异|vs|VS)", signal):
+            return f"如果只看文字不够直观，下面这张图把 {focus} 的差异并排展开了。"
+        templates = [
+            f"前面讲到的 {focus}，可以直接对照下面这张图来看。",
+            f"下面这张图把 {focus} 单独拎了出来，读到这里看会更顺手。",
+            f"这一段涉及的 {focus}，用图来理解会更快一些。",
+            f"如果想更快抓住这一节的重点，先看下面这张 {focus} 图就够了。",
+        ]
+        return templates[self._stable_variant_index(focus, len(templates))]
+
+    def _multi_illustration_bridge(self, items: list[dict[str, Any]]) -> str:
+        focuses = [self._bridge_focus_text(item) for item in items if self._bridge_focus_text(item)]
+        if len(focuses) >= 2:
+            pair = "、".join(html.escape(text) for text in focuses[:2])
+            return f"这一节里有两个关键点最值得配合图来看：{pair}。顺着下面几张图往下看，会更容易把关系串起来。"
+        return "下面几张图分别对应这一节里最关键的结构和流程，建议和前文放在一起对照着看。"
+
+    @staticmethod
+    def _bridge_focus_text(item: dict[str, Any]) -> str:
+        for key in ("title", "section", "caption"):
+            value = str(item.get(key, "") or "").strip()
+            if value:
+                return value[:26] if len(value) > 26 else value
+        return "这部分内容"
+
+    @staticmethod
+    def _stable_variant_index(text: str, count: int) -> int:
+        if count <= 0:
+            return 0
+        total = sum(ord(ch) for ch in str(text or ""))
+        return total % count
+
+    @staticmethod
+    def _is_illustration_anchor_block(block_type: str) -> bool:
+        return block_type in {"p", "ul", "ol", "blockquote", "callout", "table", "code"}
+
+    def _plan_illustration_sections(self, *, blocks: list[dict[str, Any]], illustrations: list[dict[str, Any]]) -> dict[int, list[int]]:
+        sections = self._build_sections(blocks)
+        plan: dict[int, list[int]] = {}
+        for idx, item in enumerate(illustrations):
+            best_heading_idx = None
+            best_score = 0
+            for section in sections:
+                score = self._score_illustration_to_section(item=item, section=section)
+                if score > best_score:
+                    best_score = score
+                    best_heading_idx = section.get("heading_idx")
+            if best_heading_idx is None or best_score < 18:
+                continue
+            plan.setdefault(int(best_heading_idx), []).append(idx)
+        return plan
+
+    def _build_sections(self, blocks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        sections: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+        for idx, block in enumerate(blocks):
+            if block.get("type") in {"h1", "h2", "h3"}:
+                if current:
+                    sections.append(current)
+                heading_text = str(block.get("text", "") or "").strip()
+                current = {
+                    "heading_idx": idx,
+                    "heading_text": heading_text,
+                    "search_text": heading_text,
+                }
+                continue
+            if not current:
+                continue
+            block_text = self._block_search_text(block)
+            if block_text:
+                current["search_text"] = f"{current['search_text']} {block_text}".strip()
+        if current:
+            sections.append(current)
+        return sections
+
+    def _score_illustration_to_section(self, *, item: dict[str, Any], section: dict[str, Any]) -> int:
+        heading_text = str(section.get("heading_text", "") or "")
+        search_text = str(section.get("search_text", "") or "")
+        heading_norm = self._normalized_title(heading_text)
+        section_norm = self._normalized_title(str(item.get("section", "") or ""))
+        title_norm = self._normalized_title(str(item.get("title", "") or ""))
+        caption_norm = self._normalized_title(str(item.get("caption", "") or ""))
+        score = 0
+        for candidate in (section_norm, title_norm):
+            if candidate and heading_norm:
+                if candidate == heading_norm:
+                    score += 120
+                elif len(candidate) >= 4 and (candidate in heading_norm or heading_norm in candidate):
+                    score += 72
+        search_norm = self._normalized_title(search_text)
+        for candidate in (section_norm, title_norm, caption_norm):
+            if candidate and search_norm and candidate in search_norm:
+                score += 38
+        item_tokens = self._match_tokens(
+            " ".join(
+                [
+                    str(item.get("section", "") or ""),
+                    str(item.get("title", "") or ""),
+                    str(item.get("caption", "") or ""),
+                ]
+            )
+        )
+        section_tokens = self._match_tokens(search_text)
+        score += len(item_tokens & section_tokens) * 8
+        return score
+
+    @staticmethod
+    def _block_search_text(block: dict[str, Any]) -> str:
+        block_type = str(block.get("type", "") or "")
+        if block_type in {"p", "h1", "h2", "h3", "blockquote", "callout"}:
+            return str(block.get("text", "") or "").strip()
+        if block_type in {"ul", "ol"}:
+            return " ".join(str(item).strip() for item in (block.get("items") or []) if str(item).strip())
+        if block_type == "table":
+            values = list(block.get("header") or [])
+            for row in (block.get("rows") or []):
+                values.extend(row)
+            return " ".join(str(item).strip() for item in values if str(item).strip())
+        if block_type == "code":
+            return str(block.get("text", "") or "")[:300]
+        return ""
+
+    @staticmethod
+    def _match_tokens(text: str) -> set[str]:
+        stopwords = {
+            "图解", "这一节", "这一部分", "关键", "结构", "流程", "系统", "模块", "说明", "建议",
+            "实现", "完整", "链路", "部分", "用于", "相关", "统一", "技术", "方案",
+        }
+        tokens = re.findall(r"[A-Za-z0-9@._/-]{2,}|[\u4e00-\u9fff]{2,8}", str(text or ""))
+        return {token.lower() for token in tokens if token.lower() not in stopwords}
+
+    @staticmethod
+    def _resolve_illustration_src(path: str) -> str:
+        raw = str(path or "").strip().replace("\\", "/")
+        if not raw:
+            return ""
+        if raw.startswith("data:image/") or raw.startswith("http://") or raw.startswith("https://"):
+            return raw
+        candidate = Path(raw)
+        if not candidate.exists() or not candidate.is_file():
+            return raw
+        mime_type, _ = mimetypes.guess_type(candidate.name)
+        mime_type = mime_type or "image/png"
+        encoded = base64.b64encode(candidate.read_bytes()).decode("ascii")
+        return f"data:{mime_type};base64,{encoded}"
 
     def _render_table(self, *, block: dict[str, Any], layout: dict[str, Any]) -> str:
         header_cells = "".join(
@@ -417,6 +688,7 @@ class ArticleRenderService:
         return (
             f"margin:18px 0;padding:16px;background:{layout['code_background']};color:{layout['code_color']};"
             f"border-radius:16px;overflow:auto;font-size:13px;line-height:1.75;font-family:Consolas,Monaco,monospace;"
+            f"border:1px solid {layout['border_color']};box-sizing:border-box;"
         )
 
     @staticmethod

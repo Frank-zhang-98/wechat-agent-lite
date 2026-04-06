@@ -10,8 +10,8 @@ class ConfigUpdatePayload(BaseModel):
 class TriggerRunPayload(BaseModel):
     run_type: str = "main"
     trigger_source: str = "manual"
+    source_url: str = ""
 
 
 class RunActionPayload(BaseModel):
     action: str
-

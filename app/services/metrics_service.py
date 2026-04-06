@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import CONFIG
@@ -63,8 +63,10 @@ def _token_bucket(
         conditions.append(LLMCall.created_at < end)
     if run_id is not None:
         conditions.append(LLMCall.run_id == run_id)
-    real_conditions = [*conditions, LLMCall.model != "mock-model"]
+    real_conditions = [*conditions, _real_llm_call_condition()]
     mock_conditions = [*conditions, LLMCall.model == "mock-model"]
+    invalid_conditions = [*conditions, _invalid_llm_call_condition()]
+    excluded_conditions = [*conditions, or_(LLMCall.model == "mock-model", _invalid_llm_call_condition())]
 
     total_stmt = select(
         func.count(LLMCall.id),
@@ -108,6 +110,16 @@ def _token_bucket(
         func.sum(LLMCall.total_tokens),
     ).where(*mock_conditions)
     mock_calls_count, mock_total_tokens = session.execute(mock_stmt).one()
+    invalid_stmt = select(
+        func.count(LLMCall.id),
+        func.sum(LLMCall.total_tokens),
+    ).where(*invalid_conditions)
+    invalid_calls_count, invalid_total_tokens = session.execute(invalid_stmt).one()
+    excluded_stmt = select(
+        func.count(LLMCall.id),
+        func.sum(LLMCall.total_tokens),
+    ).where(*excluded_conditions)
+    excluded_calls_count, excluded_total_tokens = session.execute(excluded_stmt).one()
 
     role_cost_map: dict[str, dict] = {}
     model_cost_map: dict[tuple[str, str], dict] = {}
@@ -218,6 +230,10 @@ def _token_bucket(
         "has_data": bool((calls_count or 0) > 0),
         "excluded_mock_calls_count": int(mock_calls_count or 0),
         "excluded_mock_total_tokens": int(mock_total_tokens or 0),
+        "excluded_invalid_calls_count": int(invalid_calls_count or 0),
+        "excluded_invalid_total_tokens": int(invalid_total_tokens or 0),
+        "excluded_non_real_calls_count": int(excluded_calls_count or 0),
+        "excluded_non_real_total_tokens": int(excluded_total_tokens or 0),
         "costs": {
             **cost_totals,
             "currency": pricing_catalog_meta()["currency"],
@@ -256,7 +272,7 @@ def get_token_overview(session: Session) -> dict:
 
     latest_run_id = session.execute(
         select(LLMCall.run_id)
-        .where(LLMCall.model != "mock-model")
+        .where(_real_llm_call_condition())
         .join(Run, Run.id == LLMCall.run_id)
         .group_by(LLMCall.run_id)
         .order_by(func.max(Run.started_at).desc())
@@ -318,4 +334,15 @@ def get_step_timing_metrics(session: Session, days: int = 7) -> dict:
         for name, count, avg, max_d in rows
     ]
     return {"days": days, "steps": out}
+
+
+def _real_llm_call_condition():
+    return and_(
+        LLMCall.model != "mock-model",
+        func.length(func.trim(func.coalesce(LLMCall.model, ""))) > 0,
+    )
+
+
+def _invalid_llm_call_condition():
+    return func.length(func.trim(func.coalesce(LLMCall.model, ""))) == 0
 

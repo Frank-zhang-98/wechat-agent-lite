@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -10,24 +11,37 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import CONFIG
+from app import state
 from app.models import Run, RunStatus, RunStep, StepStatus
 from app.services.article_render_service import ArticleRenderService
+from app.services.body_illustration_service import BodyIllustrationService
 from app.services.fetch_service import FetchService
+from app.services.fact_grounding_service import FactGroundingService
+from app.services.hallucination_check_service import HallucinationCheckService
 from app.services.llm_gateway import LLMGateway
+from app.services.localization_service import LocalizationService
 from app.services.mail_service import MailService
 from app.services.scrapling_fallback_service import ScraplingFallbackService
 from app.services.source_maintenance_service import SourceMaintenanceService
 from app.services.settings_service import SettingsService
 from app.services.title_generation_service import TitleGenerationService
+from app.services.programmatic_visual_service import ProgrammaticVisualService
+from app.services.visual_strategy_service import VisualStrategyService
+from app.services.web_enrich_service import WebEnrichService
 from app.services.wechat_service import WeChatService
 from app.services.writing_template_service import WritingTemplateService
 from app.services.concurrency_utils import iter_host_limited_results, normalized_host
 
 
 class StepFailedError(RuntimeError):
+    pass
+
+
+class RunCancelledError(RuntimeError):
     pass
 
 
@@ -51,6 +65,12 @@ class Orchestrator:
         self.wechat = WeChatService(self.settings)
         self.writing_templates = WritingTemplateService()
         self.title_generator = TitleGenerationService()
+        self.visual_strategy = VisualStrategyService()
+        self.visual_renderer = ProgrammaticVisualService()
+        self.body_illustrations = BodyIllustrationService(self.visual_renderer)
+        self.web_enrich = WebEnrichService(self.settings, self.fetch)
+        self.fact_grounding = FactGroundingService()
+        self.hallucination_checker = HallucinationCheckService()
         self.scrapling = ScraplingFallbackService(
             enabled=self.settings.get_bool("source_maintenance.scrapling_enabled", True),
             repo_path=self.settings.get("source_maintenance.scrapling_repo_path", ""),
@@ -72,6 +92,7 @@ class Orchestrator:
         )
         self.session.add(run)
         self.session.flush()
+        state.register_run_cancel(run.id)
         return run
 
     def execute_existing(self, run_id: str) -> Run:
@@ -112,12 +133,19 @@ class Orchestrator:
             run.started_at = _utcnow()
         self._commit_progress()
         try:
+            self._raise_if_cancelled(run, ctx)
             if run.run_type == "health":
                 self._run_health_only(run, ctx)
+            elif run.run_type == "manual_url":
+                self._run_manual_url(run, ctx)
             else:
                 self._run_main(run, ctx)
             if run.status == RunStatus.running.value:
                 run.status = RunStatus.success.value
+            run.finished_at = _utcnow()
+        except RunCancelledError as exc:
+            run.status = RunStatus.cancelled.value
+            run.error_message = str(exc)
             run.finished_at = _utcnow()
         except Exception as exc:
             run.status = RunStatus.failed.value
@@ -128,9 +156,10 @@ class Orchestrator:
             )
         finally:
             # Daily report only for main runs. No real-time failure alerts.
-            if run.run_type == "main":
+            if run.run_type == "main" and run.status != RunStatus.cancelled.value:
                 self._send_daily_report(run, ctx)
             self._commit_progress()
+            state.clear_run_cancel(run.id)
         return run
 
     def _run_health_only(self, run: Run, ctx: dict[str, Any]) -> None:
@@ -145,6 +174,107 @@ class Orchestrator:
             ensure_ascii=False,
         )
 
+    def _run_manual_url(self, run: Run, ctx: dict[str, Any]) -> None:
+        summary = self._parse_summary_json(run.summary_json)
+        manual_input = dict(summary.get("manual_input") or {})
+        source_url = str(manual_input.get("source_url", "") or "").strip()
+        if not source_url:
+            raise RuntimeError("manual_input.source_url is required")
+
+        metadata = self.fetch.extract_article_metadata(source_url)
+        selected_topic = {
+            "title": str(metadata.get("title", "") or source_url).strip(),
+            "url": source_url,
+            "summary": str(metadata.get("summary", "") or "").strip(),
+            "published": str(metadata.get("published", "") or "").strip(),
+            "source": normalized_host(source_url) or "manual_url",
+            "selection_reason": "手动输入链接直跑",
+            "rerank_reason": "手动输入链接，跳过热点筛选阶段",
+            "source_weight": 1.0,
+        }
+        ctx["selected_topic"] = selected_topic
+        ctx["top_n"] = [selected_topic]
+        ctx["top_k"] = [selected_topic]
+
+        self._execute_step(run, "SOURCE_ENRICH", self._step_source_enrich, ctx, self._policy_fetch())
+        self._sync_selected_topic_from_source_pack(ctx)
+        self._execute_step(run, "SOURCE_STRUCTURE", self._step_source_structure, ctx, self._policy_fetch())
+        self._execute_step(run, "WEB_SEARCH_PLAN", self._step_web_search_plan, ctx, self._policy_generate())
+        self._execute_step(run, "WEB_SEARCH_FETCH", self._step_web_search_fetch, ctx, self._policy_fetch())
+        self._execute_step(run, "FACT_GROUNDING", self._step_fact_grounding, ctx, self._policy_generate())
+        self._execute_step(run, "FACT_PACK", self._step_fact_pack, ctx, self._policy_generate())
+        self._execute_step(run, "FACT_COMPRESS", self._step_fact_compress, ctx, self._policy_generate())
+        self._execute_step(run, "WRITE", self._step_write_v2, ctx, self._policy_generate())
+        self._execute_step(run, "HALLUCINATION_CHECK", self._step_hallucination_check, ctx, self._policy_generate())
+        self._execute_step(run, "VISUAL_STRATEGY", self._step_visual_strategy, ctx, self._policy_generate())
+        self._execute_step(run, "BODY_ILLUSTRATION_GEN", self._step_body_illustration_gen, ctx, self._policy_generate())
+        self._execute_step(run, "QUALITY_CHECK", self._step_quality_check, ctx, self._policy_generate())
+        self._execute_step(run, "ARTICLE_RENDER", self._step_article_render, ctx, self._policy_generate())
+        self._execute_step(run, "COVER_5D", self._step_cover_5d, ctx, self._policy_generate())
+        self._execute_step(run, "COVER_GEN", self._step_cover_gen, ctx, self._policy_generate())
+        self._execute_step(run, "COVER_CHECK", self._step_cover_check, ctx, self._policy_generate())
+        try:
+            self._execute_step(run, "WECHAT_DRAFT", self._step_wechat_draft, ctx, self._policy_publish())
+        except StepFailedError:
+            ctx["draft_status"] = "pending_manual"
+            run.status = RunStatus.partial_success.value
+
+        run.article_title = ctx.get("article_title", "")
+        run.article_markdown = ctx.get("article_markdown", "")
+        run.quality_score = float(ctx.get("quality_score", 0))
+        run.quality_threshold = float(self.settings.get_float("quality.threshold", 78))
+        run.quality_attempts = int(ctx.get("quality_attempts", 1))
+        run.quality_fallback_used = bool(ctx.get("quality_fallback_used", False))
+        run.draft_status = ctx.get("draft_status", "not_started")
+        run.summary_json = json.dumps(
+            {
+                "manual_input": manual_input,
+                "selected_topic": ctx.get("selected_topic", {}),
+                "top_n": ctx.get("top_n", []),
+                "top_k": ctx.get("top_k", []),
+                "source_pack": ctx.get("source_pack", {}),
+                "source_structure": ctx.get("source_structure", {}),
+                "web_search_plan": ctx.get("web_search_plan", {}),
+                "web_enrich": ctx.get("web_enrich", {}),
+                "fact_grounding": ctx.get("fact_grounding", {}),
+                "fact_pack": ctx.get("fact_pack", {}),
+                "fact_compress": ctx.get("fact_compress", {}),
+                "hallucination_check": ctx.get("hallucination_check", {}),
+                "content_type": ctx.get("content_type", ""),
+                "target_audience": ctx.get("target_audience", ""),
+                "title_plan": ctx.get("title_plan", {}),
+                "visual_strategy": ctx.get("visual_strategy", {}),
+                "body_illustrations": ctx.get("body_illustrations", []),
+                "article_layout": ctx.get("article_layout", {}),
+                "article_render": ctx.get("article_render", {}),
+                "cover_asset": ctx.get("cover_asset", {}),
+                "cover_5d": ctx.get("cover_5d", {}),
+                "wechat": ctx.get("wechat_result", {}),
+                "quality_scores": ctx.get("quality_scores", []),
+                "failed_logs": ctx.get("failed_logs", []),
+            },
+            ensure_ascii=False,
+        )
+
+    def _sync_selected_topic_from_source_pack(self, ctx: dict[str, Any]) -> None:
+        selected_topic = dict(ctx.get("selected_topic") or {})
+        primary = dict((ctx.get("source_pack") or {}).get("primary") or {})
+        if not selected_topic:
+            return
+        source_url = str(selected_topic.get("url", "") or "").strip()
+        source_title = str(primary.get("title", "") or "").strip()
+        source_summary = str(primary.get("summary", "") or "").strip()
+        source_status = str(primary.get("status", "") or "").strip().lower()
+        if source_title and (selected_topic.get("title", "") == source_url or not selected_topic.get("title")):
+            selected_topic["title"] = source_title
+        if source_summary and not str(selected_topic.get("summary", "") or "").strip():
+            selected_topic["summary"] = source_summary
+        if source_status == "ok" and primary.get("url"):
+            selected_topic["url"] = str(primary.get("url", "") or "").strip() or source_url
+        ctx["selected_topic"] = selected_topic
+        ctx["top_n"] = [selected_topic]
+        ctx["top_k"] = [selected_topic]
+
     def _run_main(self, run: Run, ctx: dict[str, Any]) -> None:
         self._execute_step(run, "HEALTH_CHECK", self._step_health_check, ctx, self._policy_fetch())
         if self.settings.get_bool("source_maintenance.run_on_main", True):
@@ -155,9 +285,16 @@ class Orchestrator:
         self._execute_step(run, "RERANK", self._step_rerank_v2, ctx, self._policy_generate())
         self._execute_step(run, "SELECT", self._step_select, ctx, self._policy_generate())
         self._execute_step(run, "SOURCE_ENRICH", self._step_source_enrich, ctx, self._policy_fetch())
+        self._execute_step(run, "SOURCE_STRUCTURE", self._step_source_structure, ctx, self._policy_fetch())
+        self._execute_step(run, "WEB_SEARCH_PLAN", self._step_web_search_plan, ctx, self._policy_generate())
+        self._execute_step(run, "WEB_SEARCH_FETCH", self._step_web_search_fetch, ctx, self._policy_fetch())
+        self._execute_step(run, "FACT_GROUNDING", self._step_fact_grounding, ctx, self._policy_generate())
         self._execute_step(run, "FACT_PACK", self._step_fact_pack, ctx, self._policy_generate())
         self._execute_step(run, "FACT_COMPRESS", self._step_fact_compress, ctx, self._policy_generate())
         self._execute_step(run, "WRITE", self._step_write_v2, ctx, self._policy_generate())
+        self._execute_step(run, "HALLUCINATION_CHECK", self._step_hallucination_check, ctx, self._policy_generate())
+        self._execute_step(run, "VISUAL_STRATEGY", self._step_visual_strategy, ctx, self._policy_generate())
+        self._execute_step(run, "BODY_ILLUSTRATION_GEN", self._step_body_illustration_gen, ctx, self._policy_generate())
         self._execute_step(run, "QUALITY_CHECK", self._step_quality_check, ctx, self._policy_generate())
         self._execute_step(run, "ARTICLE_RENDER", self._step_article_render, ctx, self._policy_generate())
         self._execute_step(run, "COVER_5D", self._step_cover_5d, ctx, self._policy_generate())
@@ -185,12 +322,19 @@ class Orchestrator:
                 "top_k": ctx.get("top_k", []),
                 "selected_topic": ctx.get("selected_topic", {}),
                 "source_pack": ctx.get("source_pack", {}),
+                "source_structure": ctx.get("source_structure", {}),
+                "web_search_plan": ctx.get("web_search_plan", {}),
+                "web_enrich": ctx.get("web_enrich", {}),
+                "fact_grounding": ctx.get("fact_grounding", {}),
                 "content_type": ctx.get("content_type", ""),
                 "target_audience": ctx.get("target_audience", ""),
                 "article_layout": ctx.get("article_layout", {}),
                 "article_render": ctx.get("article_render", {}),
                 "fact_pack": ctx.get("fact_pack", {}),
                 "fact_compress": ctx.get("fact_compress", {}),
+                "hallucination_check": ctx.get("hallucination_check", {}),
+                "visual_strategy": ctx.get("visual_strategy", {}),
+                "body_illustrations": ctx.get("body_illustrations", []),
                 "title_plan": ctx.get("title_plan", {}),
                 "cover_asset": ctx.get("cover_asset", {}),
                 "cover_5d": ctx.get("cover_5d", {}),
@@ -217,9 +361,16 @@ class Orchestrator:
         ctx = {"quality_scores": [], "failed_logs": [], "selected_topic": {"title": "Manual Article Rerun", "url": "", "source": "manual"}}
         try:
             self._execute_step(run, "SOURCE_ENRICH", self._step_source_enrich, ctx, self._policy_fetch())
+            self._execute_step(run, "SOURCE_STRUCTURE", self._step_source_structure, ctx, self._policy_fetch())
+            self._execute_step(run, "WEB_SEARCH_PLAN", self._step_web_search_plan, ctx, self._policy_generate())
+            self._execute_step(run, "WEB_SEARCH_FETCH", self._step_web_search_fetch, ctx, self._policy_fetch())
+            self._execute_step(run, "FACT_GROUNDING", self._step_fact_grounding, ctx, self._policy_generate())
             self._execute_step(run, "FACT_PACK", self._step_fact_pack, ctx, self._policy_generate())
             self._execute_step(run, "FACT_COMPRESS", self._step_fact_compress, ctx, self._policy_generate())
             self._execute_step(run, "WRITE", self._step_write_v2, ctx, self._policy_generate())
+            self._execute_step(run, "HALLUCINATION_CHECK", self._step_hallucination_check, ctx, self._policy_generate())
+            self._execute_step(run, "VISUAL_STRATEGY", self._step_visual_strategy, ctx, self._policy_generate())
+            self._execute_step(run, "BODY_ILLUSTRATION_GEN", self._step_body_illustration_gen, ctx, self._policy_generate())
             self._execute_step(run, "QUALITY_CHECK", self._step_quality_check, ctx, self._policy_generate())
             self._execute_step(run, "ARTICLE_RENDER", self._step_article_render, ctx, self._policy_generate())
             run.article_title = ctx.get("article_title", "")
@@ -230,12 +381,19 @@ class Orchestrator:
             run.summary_json = json.dumps(
                 {
                     "source_pack": ctx.get("source_pack", {}),
+                    "source_structure": ctx.get("source_structure", {}),
+                    "web_search_plan": ctx.get("web_search_plan", {}),
+                    "web_enrich": ctx.get("web_enrich", {}),
+                    "fact_grounding": ctx.get("fact_grounding", {}),
                     "content_type": ctx.get("content_type", ""),
                     "target_audience": ctx.get("target_audience", ""),
                     "article_layout": ctx.get("article_layout", {}),
                     "article_render": ctx.get("article_render", {}),
                     "fact_pack": ctx.get("fact_pack", {}),
                     "fact_compress": ctx.get("fact_compress", {}),
+                    "hallucination_check": ctx.get("hallucination_check", {}),
+                    "visual_strategy": ctx.get("visual_strategy", {}),
+                    "body_illustrations": ctx.get("body_illustrations", []),
                     "quality_scores": ctx.get("quality_scores", []),
                 },
                 ensure_ascii=False,
@@ -357,10 +515,12 @@ class Orchestrator:
         self._commit_progress()
         try:
             for attempt in range(policy.max_retries + 1):
+                self._raise_if_cancelled(run, ctx, name)
                 step.retry_count = attempt
                 started = time.perf_counter()
                 try:
                     handler(run, ctx)
+                    self._raise_if_cancelled(run, ctx, name)
                     step.status = StepStatus.success.value
                     step.error_message = ""
                     step.finished_at = _utcnow()
@@ -371,6 +531,17 @@ class Orchestrator:
                     )
                     self._commit_progress()
                     return
+                except RunCancelledError as exc:
+                    step.status = StepStatus.cancelled.value
+                    step.error_message = str(exc)
+                    step.finished_at = _utcnow()
+                    step.duration_ms = int((time.perf_counter() - started) * 1000)
+                    step.details_json = json.dumps(
+                        self._build_step_details(name=name, ctx=ctx, status=step.status, error_text=str(exc)),
+                        ensure_ascii=False,
+                    )
+                    self._commit_progress()
+                    raise
                 except Exception as exc:
                     error_text = str(exc)
                     ctx.setdefault("failed_logs", []).append(
@@ -502,6 +673,13 @@ class Orchestrator:
         )
         self._commit_progress()
 
+    def _raise_if_cancelled(self, run: Run, ctx: dict[str, Any], step_name: str = "") -> None:
+        if not state.is_run_cancel_requested(run.id):
+            return
+        ctx["draft_status"] = "cancelled"
+        current = step_name or str(ctx.get("_active_step_name") or "RUN")
+        raise RunCancelledError(f"Run cancelled by user during {current}")
+
     # -------- Step handlers --------
     def _step_health_check(self, run: Run, ctx: dict[str, Any]) -> None:
         proxy_enabled = self.settings.get_bool("proxy.enabled", False)
@@ -522,6 +700,7 @@ class Orchestrator:
             llm=self.llm,
             scrapling=self.scrapling,
             progress_callback=lambda payload: self._update_live_step_details(ctx, "SOURCE_MAINTENANCE", payload),
+            cancel_checker=lambda: self._raise_if_cancelled(run, ctx, "SOURCE_MAINTENANCE"),
         )
         result = service.run(run_id=run.id)
         ctx["source_maintenance"] = {
@@ -584,6 +763,7 @@ class Orchestrator:
             max_workers=fetch_workers,
             per_host_limit=per_host_limit,
         ):
+            self._raise_if_cancelled(run, ctx, "FETCH")
             if error is not None:
                 ctx["failed_logs"].append(
                     {"step": "FETCH", "source": job.get("name", ""), "error": str(error), "at": _utcnow().isoformat()}
@@ -614,31 +794,77 @@ class Orchestrator:
         for item in items:
             if self._should_reject_topic(item):
                 continue
-            published = datetime.fromisoformat(item["published"])
+            title = str(item.get("title", "") or "").strip()
+            url = str(item.get("url", "") or "").strip()
+            if not title or title.lower().startswith(("http://", "https://")) or title == url:
+                continue
+            try:
+                published = datetime.fromisoformat(str(item.get("published", "") or "").strip())
+            except Exception:
+                continue
             hours = max((now - published).total_seconds() / 3600.0, 1.0)
             freshness = round(max(0.0, 100.0 * math.exp(-hours / max(latest_hours / 2.0, 1.0))), 2)
             source_weight = float(item.get("source_weight", 0.7)) * 100.0
             depth_score = self._topic_depth_score(item)
             novelty_score = self._topic_novelty_score(item, hours)
             value_score = self._topic_value_score(item)
+            evergreen_score = self._topic_evergreen_score(item)
+            timeliness_profile = self._topic_timeliness_profile(item)
+            if self._should_reject_stale_topic(
+                hours=hours,
+                profile=timeliness_profile,
+                evergreen_score=evergreen_score,
+                value_score=value_score,
+                depth_score=depth_score,
+            ):
+                continue
+            editorial_penalty = self._topic_editorial_penalty_score(item)
+            stale_penalty = self._topic_staleness_penalty_score(
+                hours=hours,
+                profile=timeliness_profile,
+                evergreen_score=evergreen_score,
+                value_score=value_score,
+                depth_score=depth_score,
+            )
+            fatigue_penalty = self._topic_fatigue_penalty_score(item, current_run_id=run.id)
             rule_score = round(
-                0.40 * freshness
-                + 0.25 * depth_score
-                + 0.20 * value_score
-                + 0.10 * novelty_score
-                + 0.05 * source_weight,
+                max(
+                    0.0,
+                    0.40 * freshness
+                    + 0.25 * depth_score
+                    + 0.20 * value_score
+                    + 0.10 * novelty_score
+                    + 0.05 * source_weight
+                    - 0.18 * editorial_penalty
+                    - stale_penalty
+                    - fatigue_penalty
+                ),
                 2,
             )
             item["freshness_score"] = freshness
             item["depth_score"] = depth_score
             item["value_score"] = value_score
             item["novelty_score"] = novelty_score
+            item["evergreen_score"] = evergreen_score
+            item["timeliness_profile"] = timeliness_profile
+            item["editorial_penalty_score"] = editorial_penalty
+            item["stale_penalty_score"] = stale_penalty
+            item["fatigue_penalty_score"] = fatigue_penalty
             item["rule_score"] = rule_score
             scored.append(item)
         if not scored:
             raise RuntimeError("No suitable items left after topic filtering")
         scored.sort(key=lambda x: x["rule_score"], reverse=True)
-        ctx["top_n"] = scored[: self.settings.get_int("general.top_n", 10)]
+        top_n_limit = self.settings.get_int("general.top_n", 10)
+        top_n = self._apply_source_diversity(
+            scored,
+            limit=max(0, self.settings.get_int("selection.top_n_per_source_family", 2)),
+            desired=top_n_limit,
+        )
+        min_topic_score = float(self.settings.get_float("quality.min_topic_score", 68.0))
+        if top_n and float(top_n[0].get("rule_score", 0.0) or 0.0) < min_topic_score:
+            ctx["topic_gate_warning"] = f"No topic passed minimum topic score {min_topic_score}"
+        ctx["top_n"] = top_n[:top_n_limit]
 
     def _step_rerank(self, run: Run, ctx: dict[str, Any]) -> None:
         top_n = ctx.get("top_n", [])
@@ -690,7 +916,11 @@ class Orchestrator:
             ranked_items.append(item)
 
         ranked_items.sort(key=lambda x: x["final_score"], reverse=True)
-        ctx["top_k"] = ranked_items
+        ctx["top_k"] = self._apply_source_diversity(
+            ranked_items,
+            limit=max(0, self.settings.get_int("selection.top_k_per_source_family", 1)),
+            desired=self.settings.get_int("general.top_k", 8),
+        )
 
     def _step_rerank_v2(self, run: Run, ctx: dict[str, Any]) -> None:
         top_n = ctx.get("top_n", [])
@@ -700,6 +930,7 @@ class Orchestrator:
         enrich_limit = max(1, self.settings.get_int("selection.rerank_enrich_m", 5))
         excerpt_chars = max(300, self.settings.get_int("selection.rerank_excerpt_chars", 1200))
         for idx, item in enumerate(candidates):
+            self._raise_if_cancelled(run, ctx, "RERANK")
             if idx >= enrich_limit:
                 item["rerank_excerpt"] = ""
                 item["rerank_excerpt_status"] = "skipped"
@@ -734,6 +965,11 @@ class Orchestrator:
             "从最近文章中找出今天最值得写成公众号原创深度解读的主题。"
             "优先选择新信息密度高、机制细节多、工作流价值清晰、对读者有实际判断价值的题。"
             "降低基础教程、测验、浅层资讯搬运的排序。"
+        )
+        query += (
+            " 明确排除活动预告、workshop/webinar/conference 报名页、营销页、销售页、发售公告、"
+            "以及主要目的是卖代码、卖模板、引导付款的页面。即使这些页面带有 API、workflow、automation、"
+            "code snippet，也不要因为技术味重就误选。"
         )
         reranked = self.llm.rerank_documents(
             run.id,
@@ -770,6 +1006,11 @@ class Orchestrator:
             ranked_items.append(item)
 
         ranked_items.sort(key=lambda x: x["final_score"], reverse=True)
+        ranked_items = self._apply_source_diversity(
+            ranked_items,
+            limit=max(0, self.settings.get_int("selection.top_k_per_source_family", 1)),
+            desired=self.settings.get_int("general.top_k", 8),
+        )
         ctx["top_k"] = ranked_items
         self._set_step_audit(
             ctx,
@@ -804,22 +1045,38 @@ class Orchestrator:
             raise RuntimeError("TopK is empty")
         refine_top_m = max(1, self.settings.get_int("selection.refine_top_m", 4))
         candidates = [dict(item) for item in ranked[:refine_top_m]]
+        evidence_weight = float(self.settings.get_float("selection.evidence_score_weight", 0.18))
         for item in candidates:
+            self._raise_if_cancelled(run, ctx, "SELECT")
             url = str(item.get("url", "") or "").strip()
             excerpt = str(item.get("rerank_excerpt", "") or "")
             if url and not excerpt:
                 result = self.fetch.extract_article_content(url, max_chars=1800)
                 excerpt = str(result.get("content_text", "") or "")[:1000]
             item["selection_excerpt"] = excerpt
+            evidence = self._probe_topic_evidence(item)
+            item["evidence_score"] = evidence.get("score", 0.0)
+            item["evidence_summary"] = evidence.get("summary", "")
+            item["evidence_probe"] = evidence
 
-        prompt = self._build_select_prompt(candidates)
+        prompt = self._build_select_prompt_v2(candidates)
+        prompt += (
+            "\n\n额外规则：不要选择 workshop/webinar/conference 报名页、活动预告、销售页、发售公告、"
+            "或主要目的是卖代码、卖模板、引导付款的页面。即使这类页面包含 API、automation、workflow、"
+            "代码片段，也应判定为不适合写成今日深度选题。"
+        )
         decision = self.llm.call(run.id, "SELECT", "decision", prompt, temperature=0.1)
         selected_index = self._parse_select_choice(decision.text, len(candidates))
         if selected_index < 0:
             selected_index = max(
                 range(len(candidates)),
-                key=lambda idx: float(candidates[idx].get("rule_score", 0) or 0)
-                + min(len(str(candidates[idx].get("selection_excerpt", "") or "")) / 100.0, 20.0),
+                key=lambda idx: (
+                    float(candidates[idx].get("rule_score", 0) or 0)
+                    - 0.35 * float(candidates[idx].get("editorial_penalty_score", 0) or 0)
+                    - 0.25 * float(candidates[idx].get("fatigue_penalty_score", 0) or 0)
+                    + evidence_weight * float(candidates[idx].get("evidence_score", 0) or 0)
+                    + min(len(str(candidates[idx].get("selection_excerpt", "") or "")) / 100.0, 20.0)
+                ),
             )
         selected = candidates[selected_index]
         selected["selection_reason"] = self._clip_text(decision.text, 1200)
@@ -859,6 +1116,7 @@ class Orchestrator:
             "paragraphs": [],
         }
         if primary_url:
+            self._raise_if_cancelled(run, ctx, "SOURCE_ENRICH")
             primary_extract = self.fetch.extract_article_content(primary_url, max_chars=max_chars)
             primary_source.update(primary_extract)
             if not primary_source.get("title"):
@@ -867,6 +1125,7 @@ class Orchestrator:
         related_sources: list[dict[str, Any]] = []
         seen_urls = {primary_url} if primary_url else set()
         for item in list(ctx.get("top_k") or []):
+            self._raise_if_cancelled(run, ctx, "SOURCE_ENRICH")
             candidate_url = str(item.get("url", "") or "").strip()
             if not candidate_url or candidate_url in seen_urls:
                 continue
@@ -903,16 +1162,133 @@ class Orchestrator:
             },
         )
 
+    def _step_source_structure(self, run: Run, ctx: dict[str, Any]) -> None:
+        source_pack = dict(ctx.get("source_pack") or {})
+        primary = dict(source_pack.get("primary") or {})
+        primary_url = str(primary.get("url", "") or "").strip()
+        title = str(primary.get("title", "") or (ctx.get("selected_topic") or {}).get("title", "") or "").strip()
+        if not primary_url:
+            ctx["source_structure"] = {
+                "status": "skipped",
+                "reason": "no_primary_url",
+                "title": title,
+                "lead": "",
+                "sections": [],
+                "code_blocks": [],
+                "lists": [],
+                "tables": [],
+                "coverage_checklist": [],
+            }
+            return
+        structure = self.fetch.extract_article_structure(primary_url, max_chars=14000)
+        if not structure.get("title") and title:
+            structure["title"] = title
+        ctx["source_structure"] = structure
+        self._set_step_audit(
+            ctx,
+            "SOURCE_STRUCTURE",
+            {
+                "outputs": [
+                    {
+                        "title": "原文结构提取结果",
+                        "text": self._clip_text(json.dumps(structure, ensure_ascii=False, indent=2), 8000),
+                        "language": "json",
+                    }
+                ]
+            },
+        )
+
+    def _step_web_search_plan(self, run: Run, ctx: dict[str, Any]) -> None:
+        topic = dict(ctx.get("selected_topic") or {})
+        source_pack = dict(ctx.get("source_pack") or {})
+        source_structure = dict(ctx.get("source_structure") or {})
+        evidence_score = float(topic.get("evidence_score", 0.0) or 0.0)
+        content_type = str(ctx.get("content_type") or "tool_review")
+        plan = self.web_enrich.build_search_plan(
+            run_id=run.id,
+            topic=topic,
+            source_pack=source_pack,
+            source_structure=source_structure,
+            content_type=content_type,
+            evidence_score=evidence_score,
+            llm=self.llm,
+        )
+        ctx["web_search_plan"] = plan
+        self._set_step_audit(
+            ctx,
+            "WEB_SEARCH_PLAN",
+            {
+                "outputs": [
+                    {
+                        "title": "Web search plan",
+                        "text": self._clip_text(json.dumps(plan, ensure_ascii=False, indent=2), 6000),
+                        "language": "json",
+                    }
+                ]
+            },
+        )
+
+    def _step_web_search_fetch(self, run: Run, ctx: dict[str, Any]) -> None:
+        plan = dict(ctx.get("web_search_plan") or {})
+        result = self.web_enrich.fetch_search_results(plan=plan)
+        ctx["web_enrich"] = result
+        self._set_step_audit(
+            ctx,
+            "WEB_SEARCH_FETCH",
+            {
+                "outputs": [
+                    {
+                        "title": "Web enrich result",
+                        "text": self._clip_text(json.dumps(result, ensure_ascii=False, indent=2), 8000),
+                        "language": "json",
+                    }
+                ]
+            },
+        )
+
+    def _step_fact_grounding(self, run: Run, ctx: dict[str, Any]) -> None:
+        grounding = self.fact_grounding.ground(
+            run_id=run.id,
+            topic=dict(ctx.get("selected_topic") or {}),
+            source_pack=dict(ctx.get("source_pack") or {}),
+            source_structure=dict(ctx.get("source_structure") or {}),
+            web_enrich=dict(ctx.get("web_enrich") or {}),
+            llm=self.llm,
+        )
+        ctx["fact_grounding"] = grounding
+        ctx["evidence_mode"] = grounding.get("evidence_mode", "analysis")
+        self._set_step_audit(
+            ctx,
+            "FACT_GROUNDING",
+            {
+                "outputs": [
+                    {
+                        "title": "Fact grounding",
+                        "text": self._clip_text(json.dumps(grounding, ensure_ascii=False, indent=2), 8000),
+                        "language": "json",
+                    }
+                ]
+            },
+        )
+
     def _step_fact_pack(self, run: Run, ctx: dict[str, Any]) -> None:
         default_audience = self.settings.get("writing.default_audience", "ai_product_manager").strip() or "ai_product_manager"
         configured_type = self.settings.get("writing.default_content_type", "auto").strip().lower()
         fact_pack = self.writing_templates.build_fact_pack(ctx, audience_key=default_audience)
         content_type = configured_type if configured_type and configured_type != "auto" else fact_pack.get("content_type", "tool_review")
+        target_audience = default_audience
+        if self.settings.get_bool("writing.auto_switch_audience", True):
+            if content_type == "technical_walkthrough" or len(fact_pack.get("implementation_steps") or []) >= 2 or len(fact_pack.get("code_artifacts") or []) >= 1:
+                target_audience = "ai_builder"
+            elif content_type == "industry_analysis":
+                target_audience = "ai_product_manager"
+        if target_audience != default_audience:
+            fact_pack = self.writing_templates.build_fact_pack(ctx, audience_key=target_audience)
         fact_pack["content_type"] = content_type
         fact_pack["content_type_label"] = self.writing_templates.get_content_type(content_type).get("label", content_type)
         ctx["fact_pack"] = fact_pack
         ctx["content_type"] = content_type
-        ctx["target_audience"] = default_audience
+        ctx["target_audience"] = target_audience
         self._set_step_audit(
             ctx,
             "FACT_PACK",
@@ -930,6 +1306,7 @@ class Orchestrator:
     def _step_fact_compress(self, run: Run, ctx: dict[str, Any]) -> None:
         fact_pack = dict(ctx.get("fact_pack") or {})
         source_pack = dict(ctx.get("source_pack") or {})
+        fact_grounding = dict(ctx.get("fact_grounding") or {})
         if not fact_pack:
             raise RuntimeError("fact_pack is empty")
         prompt = (
@@ -939,7 +1316,8 @@ class Orchestrator:
             "Each value must be an array except one_sentence_summary which must be a string.\n"
             "Only keep high-confidence facts grounded in the provided materials. If unsure, put it into uncertainties.\n\n"
             f"Source Pack:\n{self._clip_text(json.dumps(source_pack, ensure_ascii=False), 6000)}\n\n"
-            f"Fact Pack:\n{self._clip_text(json.dumps(fact_pack, ensure_ascii=False), 4000)}"
+            f"Fact Pack:\n{self._clip_text(json.dumps(fact_pack, ensure_ascii=False), 4000)}\n\n"
+            f"Fact Grounding:\n{self._clip_text(json.dumps(fact_grounding, ensure_ascii=False), 4000)}"
         )
         result = self.llm.call(run.id, "FACT_COMPRESS", "decision", prompt, temperature=0.1)
         compressed = self._parse_fact_compress_result(result.text, fact_pack)
@@ -983,7 +1361,7 @@ class Orchestrator:
         if not title.endswith("解读"):
             title = f"{title}：实战解读"
         ctx["article_title"] = title[:80]
-        ctx["article_markdown"] = article
+        ctx["article_markdown"] = self._prepare_article_markdown(article)
         self._set_step_audit(
             ctx,
             "WRITE",
@@ -1037,7 +1415,7 @@ class Orchestrator:
         ctx["article_title"] = title_plan.article_title
         ctx["wechat_title"] = title_plan.wechat_title
         ctx["title_plan"] = title_plan.as_dict()
-        ctx["article_markdown"] = article
+        ctx["article_markdown"] = self._prepare_article_markdown(article)
         self._set_step_audit(
             ctx,
             "WRITE",
@@ -1063,18 +1441,139 @@ class Orchestrator:
             },
         )
 
+    def _step_hallucination_check(self, run: Run, ctx: dict[str, Any]) -> None:
+        article = str(ctx.get("article_markdown") or "").strip()
+        if not article:
+            raise RuntimeError("article_markdown is empty")
+        grounding = dict(ctx.get("fact_grounding") or {})
+        result = self.hallucination_checker.check(
+            run_id=run.id,
+            article_markdown=article,
+            fact_grounding=grounding,
+            llm=self.llm,
+        )
+        rewrite_applied = False
+        if self.settings.get_bool("hallucination_check.enabled", True) and result.get("rewrite_required"):
+            violations = (
+                list(result.get("unsupported_claims") or [])
+                + list(result.get("inference_written_as_fact") or [])
+                + list(result.get("forbidden_claim_violations") or [])
+            )
+            fact_pack = dict(ctx.get("fact_pack") or {})
+            prompt = self.writing_templates.build_write_prompt(
+                topic=dict(ctx.get("selected_topic") or {}),
+                fact_pack=fact_pack,
+                audience_key=str(ctx.get("target_audience") or "ai_product_manager"),
+                content_type=str(ctx.get("content_type") or fact_pack.get("content_type") or "tool_review"),
+            )
+            prompt += (
+                "\n\n【Fact grounding】\n"
+                f"{self._clip_text(json.dumps(grounding, ensure_ascii=False, indent=2), 4000)}\n\n"
+                "【Rewrite task】\n"
+                "Revise the article to remove unsupported claims, label inferences cautiously, and never write forbidden claims as facts.\n"
+                "Problems found:\n"
+                + "\n".join(f"- {item}" for item in violations[:10])
+                + "\n\nCurrent article:\n"
+                + article[:4000]
+            )
+            rewritten = self.llm.call(run.id, "WRITE", "writer", prompt, temperature=0.35).text.strip()
+            if len(rewritten) > 150:
+                ctx["article_markdown"] = self._prepare_article_markdown(rewritten)
+                rewrite_applied = True
+        result["rewrite_applied"] = rewrite_applied
+        ctx["hallucination_check"] = result
+        self._set_step_audit(
+            ctx,
+            "HALLUCINATION_CHECK",
+            {
+                "outputs": [
+                    {
+                        "title": "Hallucination check",
+                        "text": self._clip_text(json.dumps(result, ensure_ascii=False, indent=2), 8000),
+                        "language": "json",
+                    }
+                ]
+            },
+        )
+
+    def _step_visual_strategy(self, run: Run, ctx: dict[str, Any]) -> None:
+        strategy = self.visual_strategy.build_strategy(
+            run_id=run.id,
+            topic=dict(ctx.get("selected_topic") or {}),
+            fact_pack=dict(ctx.get("fact_pack") or {}),
+            fact_grounding=dict(ctx.get("fact_grounding") or {}),
+            source_structure=dict(ctx.get("source_structure") or {}),
+            llm=self.llm,
+            max_body_illustrations=max(0, self.settings.get_int("visual.max_body_illustrations", 2)),
+        )
+        ctx["visual_strategy"] = strategy
+        self._set_step_audit(
+            ctx,
+            "VISUAL_STRATEGY",
+            {
+                "outputs": [
+                    {
+                        "title": "Visual strategy",
+                        "text": self._clip_text(json.dumps(strategy, ensure_ascii=False, indent=2), 8000),
+                        "language": "json",
+                    }
+                ]
+            },
+        )
+
+    def _step_body_illustration_gen(self, run: Run, ctx: dict[str, Any]) -> None:
+        if not self.settings.get_bool("visual.body_illustration_enabled", True):
+            ctx["body_illustrations"] = []
+            return
+        strategy = dict(ctx.get("visual_strategy") or {})
+        assets = self.body_illustrations.generate(
+            run_id=run.id,
+            article_title=str(ctx.get("article_title") or ""),
+            visual_strategy=strategy,
+            size=self.settings.get("visual.body_illustration_size", "1400*1050"),
+        )
+        ctx["body_illustrations"] = assets
+        self._set_step_audit(
+            ctx,
+            "BODY_ILLUSTRATION_GEN",
+            {
+                "outputs": [
+                    {
+                        "title": "Body illustrations",
+                        "text": self._clip_text(json.dumps(assets, ensure_ascii=False, indent=2), 8000),
+                        "language": "json",
+                    }
+                ]
+            },
+        )
+
     def _step_quality_check(self, run: Run, ctx: dict[str, Any]) -> None:
         threshold = self.settings.get_float("quality.threshold", 78.0)
         max_rounds = self.settings.get_int("quality.max_rounds", 3)
         scores: list[float] = []
         best = {"score": -1.0, "title": "", "article": ""}
         topic = ctx.get("selected_topic", {})
+        fact_pack = dict(ctx.get("fact_pack") or {})
+        coverage_items = [str(item) for item in (fact_pack.get("coverage_checklist") or []) if str(item).strip()]
+        section_items = [
+            str(item.get("heading", "") or "").strip()
+            for item in (fact_pack.get("section_blueprint") or [])
+            if isinstance(item, dict) and str(item.get("heading", "") or "").strip()
+        ]
+        coverage_text = "\n".join(f"- {item}" for item in coverage_items[:10]) or "- 无"
+        section_text = "\n".join(f"- {item}" for item in section_items[:8]) or "- 无"
         round_logs: list[dict[str, Any]] = []
 
         for round_idx in range(1, max_rounds + 1):
+            self._raise_if_cancelled(run, ctx, "QUALITY_CHECK")
             eval_prompt = (
                 "Evaluate article quality from 0 to 100. "
-                "Output one line starting with SCORE: <number> and then short reasons.\n\n"
+                "Focus on structure fidelity, technical specificity, natural tone, and clean markdown organization. "
+                "Check whether the article preserves major implementation steps, code meaning, and coverage checklist items. "
+                "Output one line starting with SCORE: <number> and then 3-5 short reasons.\n\n"
+                f"Content Type: {ctx.get('content_type', '')}\n"
+                f"Coverage Checklist:\n{coverage_text}\n\n"
+                f"Source Section Blueprint:\n{section_text}\n\n"
                 f"Title: {ctx.get('article_title', '')}\n"
                 f"Article:\n{ctx.get('article_markdown', '')[:3000]}"
             )
@@ -1128,22 +1627,33 @@ class Orchestrator:
                 return
 
             if round_idx < max_rounds:
-                fact_pack_text = self._clip_text(
-                    self.writing_templates.preview_fact_pack(dict(ctx.get("fact_pack") or {}), limit=2000),
-                    2000,
+                rewrite_prompt = self.writing_templates.build_write_prompt(
+                    topic=topic,
+                    fact_pack=fact_pack,
+                    audience_key=str(
+                        ctx.get("target_audience")
+                        or self.settings.get("writing.default_audience", "ai_product_manager")
+                    ),
+                    content_type=str(ctx.get("content_type") or fact_pack.get("content_type") or "tool_review"),
                 )
                 improve_prompt = (
-                    "Improve the article quality according to this feedback and rewrite in Chinese markdown.\n"
-                    "You must preserve factual accuracy and can only rely on the provided fact pack.\n"
-                    f"Fact Pack:\n{fact_pack_text}\n\n"
-                    f"Feedback:\n{eval_result.text[:1000]}\n\n"
-                    f"Current Article:\n{ctx.get('article_markdown', '')[:3000]}"
+                    f"{rewrite_prompt}\n\n"
+                    "【质检反馈】\n"
+                    f"{eval_result.text[:1000]}\n\n"
+                    "【重写要求】\n"
+                    "- 优先修复质检指出的问题，但不要牺牲原文结构保真度。\n"
+                    "- 保留原文实现步骤、代码职责、架构角色和 coverage checklist，不要写成空泛总结。\n"
+                    "- 不要套用重复的“机制 / 价值 / 场景 / 工作流”模板句式。\n"
+                    "- 除非同一节内部确实需要顺序说明，否则不要把全文改写成多个从 1 开始的顶层编号列表。\n"
+                    "- 只输出修订后的简体中文 Markdown 正文。\n\n"
+                    "【当前文章】\n"
+                    f"{ctx.get('article_markdown', '')[:3000]}"
                 )
                 rewritten = self.llm.call(run.id, "WRITE", "writer", improve_prompt, temperature=0.45).text.strip()
                 round_log["improve_prompt"] = self._clip_text(improve_prompt, 8000)
                 round_log["rewrite_preview"] = self._clip_text(rewritten, 4000)
                 if len(rewritten) > 150:
-                    ctx["article_markdown"] = rewritten
+                    ctx["article_markdown"] = self._prepare_article_markdown(rewritten)
             round_logs.append(round_log)
 
         # 3 rounds still below threshold => choose best score version.
@@ -1198,9 +1708,10 @@ class Orchestrator:
         )
 
     def _step_article_render(self, run: Run, ctx: dict[str, Any]) -> None:
-        article_markdown = str(ctx.get("article_markdown") or "").strip()
+        article_markdown = self._prepare_article_markdown(str(ctx.get("article_markdown") or "").strip())
         if not article_markdown:
             raise RuntimeError("article_markdown is empty")
+        ctx["article_markdown"] = article_markdown
         article_title = str(ctx.get("article_title") or "").strip()
         content_type = str(ctx.get("content_type") or "tool_review").strip() or "tool_review"
         audience = str(ctx.get("target_audience") or "").strip()
@@ -1209,6 +1720,7 @@ class Orchestrator:
             article_title=article_title,
             content_type=content_type,
             target_audience=audience,
+            illustrations=list(ctx.get("body_illustrations") or []),
         )
         html_path = self.article_renderer.save_html(rendered, run.id)
         ctx["article_layout"] = {
@@ -1291,43 +1803,106 @@ class Orchestrator:
         )
 
     def _step_cover_gen(self, run: Run, ctx: dict[str, Any]) -> None:
-        prompt_request = (
-            "请为微信公众号文章生成一段适合文生图模型的中文封面提示词。\n"
-            "要求：横版封面、科技感、主体明确、构图简洁、强对比、适合公众号首图，不要水印，不要边框，避免大段文字。\n"
-            f"文章标题：{ctx.get('article_title', '')}\n"
-            f"封面 5D：{json.dumps(ctx.get('cover_5d', {}), ensure_ascii=False)}"
-        )
-        prompt_result = self.llm.call(run.id, "COVER_GEN", "cover_prompt", prompt_request, temperature=0.4)
-        image_prompt = prompt_result.text.strip()
-        if len(image_prompt) < 20:
-            image_prompt = self._fallback_cover_prompt(ctx.get("article_title", ""), ctx.get("cover_5d", {}))
+        strategy = dict(ctx.get("visual_strategy") or {})
         output_dir = CONFIG.data_dir / "runs" / run.id
-        ctx["cover_asset"] = self.llm.generate_cover_image(
-            run.id,
-            "COVER_GEN",
-            "cover_image",
-            prompt=image_prompt,
-            output_dir=output_dir,
-            size="1280*720",
+        output_dir.mkdir(parents=True, exist_ok=True)
+        article_title = str(ctx.get("article_title", "") or "")
+        cover_size = self.settings.get("visual.cover_size", "1280*720")
+        cover_brief = dict(strategy.get("cover_brief") or {})
+        prompt_request = self.visual_strategy.build_cover_prompt_request(
+            article_title=article_title,
+            strategy=strategy,
+            cover_5d=dict(ctx.get("cover_5d") or {}),
         )
+        prompt_result = self.llm.call(run.id, "COVER_GEN", "cover_prompt", prompt_request, temperature=0.35)
+        image_prompt = prompt_result.text.strip() or self._fallback_cover_prompt(article_title, dict(ctx.get("cover_5d") or {}))
+
+        cover_asset: dict[str, Any]
+        raw_asset: dict[str, Any]
+        raw_error = ""
+        try:
+            raw_asset = self.llm.generate_cover_image(
+                run.id,
+                "COVER_GEN",
+                "cover_image",
+                prompt=image_prompt,
+                output_dir=output_dir / "cover-image",
+                size=cover_size,
+            )
+        except Exception as exc:
+            raw_error = str(exc)
+            raw_asset = {"status": "generation_failed", "error": raw_error, "size": cover_size.replace("*", "x")}
+
+        raw_path = str(raw_asset.get("path", "") or "").strip()
+        if raw_asset.get("status") == "generated" and raw_path:
+            try:
+                overlaid = self.visual_renderer.overlay_cover_title(
+                    base_image_path=Path(raw_path),
+                    article_title=article_title,
+                    output_path=output_dir / "cover-final.png",
+                    size=cover_size,
+                    title_safe_zone=str(cover_brief.get("title_safe_zone", "left_bottom") or "left_bottom"),
+                )
+                cover_asset = {
+                    **raw_asset,
+                    **overlaid,
+                    "base_image_path": raw_path,
+                    "image_prompt": image_prompt[:2000],
+                    "generator": "native_image_with_title_overlay",
+                }
+            except Exception as exc:
+                raw_error = str(exc)
+                cover_asset = {
+                    **raw_asset,
+                    "image_prompt": image_prompt[:2000],
+                    "generator": "native_image_raw",
+                    "overlay_error": raw_error,
+                }
+        else:
+            fallback_path = output_dir / "cover-programmatic.png"
+            fallback_asset = self.visual_renderer.render_cover(
+                article_title=article_title,
+                strategy=strategy,
+                cover_5d=dict(ctx.get("cover_5d") or {}),
+                output_path=fallback_path,
+                size=cover_size,
+            )
+            cover_asset = {
+                **fallback_asset,
+                "fallback_reason": raw_asset.get("status") or "unknown",
+                "image_prompt": image_prompt[:2000],
+                "generator": "programmatic_fallback",
+            }
+            if raw_path:
+                cover_asset["base_image_path"] = raw_path
+            if raw_error:
+                cover_asset["image_error"] = raw_error
+
+        ctx["cover_asset"] = cover_asset
         self._set_step_audit(
             ctx,
             "COVER_GEN",
             {
                 "prompts": [
                     {
-                        "title": "封面提示词生成请求",
-                        "text": self._clip_text(prompt_request, 8000),
+                        "title": "封面提示词请求",
+                        "text": self._clip_text(prompt_request, 4000),
                     },
                     {
-                        "title": "最终出图提示词",
-                        "text": self._clip_text(image_prompt, 8000),
+                        "title": "封面出图提示词",
+                        "text": self._clip_text(image_prompt, 4000),
                     },
                 ],
                 "outputs": [
                     {
-                        "title": "封面提示词模型回包",
-                        "text": self._clip_text(prompt_result.text, 4000),
+                        "title": "封面生成结果",
+                        "text": self._clip_text(json.dumps(raw_asset, ensure_ascii=False, indent=2), 4000),
+                        "language": "json",
+                    },
+                    {
+                        "title": "封面成品结果",
+                        "text": self._clip_text(json.dumps(ctx["cover_asset"], ensure_ascii=False, indent=2), 4000),
+                        "language": "json",
                     }
                 ],
             },
@@ -1373,9 +1948,11 @@ class Orchestrator:
     def _fallback_cover_prompt(title: str, cover_5d: dict[str, Any]) -> str:
         total = cover_5d.get("鎬诲垎", "-")
         return (
-            f"微信公众号科技文章横版封面，主题围绕“{title}”，"
+            f"微信公众号科技文章横版主题封面图，主题围绕“{title}”，"
             f"突出科技感与专业感，主体明确，景别干净，光线有层次，"
-            f"适合 1280x720 封面图，视觉评分目标 {total}，无水印，无边框，无杂乱小字。"
+            f"左侧或左下保留适合叠加标题的干净留白区域，"
+            f"图片中不要出现任何可读文字、logo、水印、伪文字、杂乱小字，"
+            f"适合 1280x720 封面图，视觉评分目标 {total}。"
         )
 
     @staticmethod
@@ -1411,10 +1988,379 @@ class Orchestrator:
 
     @staticmethod
     def _heuristic_score(article: str, round_idx: int) -> float:
-        base = min(68.0 + len(article) / 115.0, 86.0)
+        prose_length = len(Orchestrator._article_prose_text(article))
+        base = min(68.0 + prose_length / 115.0, 86.0)
         bonus = round_idx * 3.4
         noise = random.uniform(-1.0, 1.0)
         return round(min(base + bonus + noise, 93.0), 2)
+
+    @staticmethod
+    def _article_prose_text(article: str) -> str:
+        text = str(article or "")
+        text = re.sub(r"```[\s\S]*?```", "\n", text)
+        text = re.sub(r"`[^`\n]+`", " ", text)
+        return re.sub(r"\s+", " ", text).strip()
+
+    def _prepare_article_markdown(self, article: str) -> str:
+        text = str(article or "").replace("\r\n", "\n").replace("\r", "\n").strip()
+        if not text:
+            return text
+        text = self._strip_outer_markdown_fence(text)
+        text = self._normalize_inline_fence_openers(text)
+        text = self._repair_markdown_fences(text)
+        text = self._normalize_standalone_heading_lines(text)
+        text = self._localize_markdown_headings(text)
+        text = re.sub(r"\n{3,}", "\n\n", text).strip()
+        return text
+
+    @staticmethod
+    def _strip_outer_markdown_fence(text: str) -> str:
+        match = re.match(r"^\s*```(?:markdown|md)?\s*\n([\s\S]*?)\n```\s*$", str(text or ""), flags=re.IGNORECASE)
+        if match:
+            inner = str(match.group(1) or "").strip()
+            if inner:
+                return inner
+        return str(text or "")
+
+    def _normalize_inline_fence_openers(self, text: str) -> str:
+        output: list[str] = []
+        for line in str(text or "").split("\n"):
+            raw = line.rstrip()
+            stripped = raw.strip()
+            if not raw or stripped.startswith("```") or "```" not in raw:
+                output.append(raw)
+                continue
+            before, after = raw.split("```", 1)
+            if not before.strip():
+                output.append(raw)
+                continue
+            language, body = self._split_fence_language_and_body(after)
+            output.append(before.rstrip())
+            output.append(f"```{language}".rstrip())
+            body = body.strip()
+            if body:
+                if "```" in body:
+                    code_text, trailing = body.split("```", 1)
+                    if code_text.strip():
+                        output.append(code_text.rstrip())
+                    output.append("```")
+                    if trailing.strip():
+                        output.append(trailing.strip())
+                else:
+                    output.append(body)
+        return "\n".join(output)
+
+    @staticmethod
+    def _split_fence_language_and_body(text: str) -> tuple[str, str]:
+        allowed_languages = {
+            "text",
+            "bash",
+            "sh",
+            "shell",
+            "zsh",
+            "powershell",
+            "ps1",
+            "python",
+            "py",
+            "javascript",
+            "js",
+            "typescript",
+            "ts",
+            "json",
+            "yaml",
+            "yml",
+            "toml",
+            "ini",
+            "sql",
+            "markdown",
+            "md",
+            "xml",
+            "html",
+            "css",
+            "dockerfile",
+            "makefile",
+        }
+        stripped = str(text or "").lstrip()
+        if not stripped:
+            return "", ""
+        match = re.match(r"^([A-Za-z0-9_+-]+)(?:\s+(.*))?$", stripped)
+        if not match:
+            return "", stripped
+        token = str(match.group(1) or "").strip()
+        remainder = str(match.group(2) or "")
+        if token.lower() in allowed_languages:
+            return token, remainder
+        return "", stripped
+
+    def _repair_markdown_fences(self, text: str) -> str:
+        lines = str(text or "").split("\n")
+        output: list[str] = []
+        i = 0
+        while i < len(lines):
+            stripped = lines[i].strip()
+            if not stripped.startswith("```"):
+                output.append(lines[i].rstrip())
+                i += 1
+                continue
+            language = stripped[3:].strip()
+            code_lines: list[str] = []
+            i += 1
+            while i < len(lines) and not lines[i].strip().startswith("```"):
+                code_lines.append(lines[i].rstrip())
+                i += 1
+            if i < len(lines) and lines[i].strip().startswith("```"):
+                i += 1
+            repaired = self._repair_fenced_block(language=language, code_lines=code_lines)
+            output.extend(repaired)
+        return "\n".join(output)
+
+    def _normalize_standalone_heading_lines(self, text: str) -> str:
+        parts = re.split(r"(```[\s\S]*?```)", str(text or ""))
+        normalized_parts: list[str] = []
+        for idx, part in enumerate(parts):
+            if idx % 2 == 1:
+                normalized_parts.append(part)
+                continue
+            lines = part.splitlines(keepends=True)
+            output: list[str] = []
+            previous_heading_level = 0
+            for line_idx, line in enumerate(lines):
+                line_break = ""
+                if line.endswith("\r\n"):
+                    line_break = "\r\n"
+                elif line.endswith("\n"):
+                    line_break = "\n"
+                content = line[:-len(line_break)] if line_break else line
+                stripped = str(content or "").strip()
+                if not stripped:
+                    output.append(line)
+                    continue
+                heading_match = re.match(r"^(#{1,6})\s+", stripped)
+                if heading_match:
+                    previous_heading_level = len(heading_match.group(1))
+                    output.append(line)
+                    continue
+                prev_blank = line_idx == 0 or not str(lines[line_idx - 1] or "").strip()
+                next_nonempty = ""
+                for probe in lines[line_idx + 1 :]:
+                    if str(probe or "").strip():
+                        next_nonempty = str(probe).strip()
+                        break
+                if (
+                    prev_blank
+                    and next_nonempty
+                    and re.search(r"[A-Za-z]", stripped)
+                    and LocalizationService.looks_like_heading_text(stripped)
+                ):
+                    level = "###" if previous_heading_level >= 2 else "##"
+                    localized = self._translate_heading_text(stripped)
+                    output.append(f"{level} {localized}{line_break}")
+                    previous_heading_level = len(level)
+                    continue
+                output.append(line)
+            normalized_parts.append("".join(output))
+        return "".join(normalized_parts)
+
+    def _repair_fenced_block(self, *, language: str, code_lines: list[str]) -> list[str]:
+        content = self._trim_blank_lines(code_lines)
+        if not content:
+            return []
+
+        if self._looks_like_structured_example_block(content):
+            return [f"```{language}".rstrip(), *content, "```"]
+
+        if (
+            len(content) >= 2
+            and self._is_prose_like_line(content[0], language=language)
+            and self._is_prose_like_line(content[1], language=language)
+        ):
+            return content
+
+        split_idx = self._find_code_prose_split(content=content, language=language)
+        if split_idx is not None:
+            code_part = self._trim_blank_lines(content[:split_idx])
+            prose_part = self._trim_blank_lines(content[split_idx:])
+            output: list[str] = []
+            if code_part:
+                output.extend([f"```{language}".rstrip(), *code_part, "```"])
+            if prose_part:
+                if output:
+                    output.append("")
+                output.extend(prose_part)
+            return output
+
+        if self._block_is_prose_like(content=content, language=language):
+            return content
+
+        return [f"```{language}".rstrip(), *content, "```"]
+
+    def _find_code_prose_split(self, *, content: list[str], language: str) -> int | None:
+        if len(content) < 2:
+            return None
+        for idx in range(1, len(content)):
+            code_part = self._trim_blank_lines(content[:idx])
+            prose_part = self._trim_blank_lines(content[idx:])
+            if not code_part or not prose_part:
+                continue
+            if self._block_is_code_like(content=code_part, language=language) and self._block_is_prose_like(
+                content=prose_part,
+                language=language,
+            ):
+                return idx
+        return None
+
+    def _block_is_code_like(self, *, content: list[str], language: str) -> bool:
+        code_hits = 0
+        prose_hits = 0
+        for line in content:
+            if self._is_code_like_line(line, language=language):
+                code_hits += 1
+            elif self._is_prose_like_line(line, language=language):
+                prose_hits += 1
+        return code_hits >= max(1, prose_hits)
+
+    def _block_is_prose_like(self, *, content: list[str], language: str) -> bool:
+        if len(content) == 1:
+            return self._is_prose_like_line(content[0], language=language)
+        prose_hits = 0
+        code_hits = 0
+        for line in content:
+            if self._is_prose_like_line(line, language=language):
+                prose_hits += 1
+            elif self._is_code_like_line(line, language=language):
+                code_hits += 1
+        return prose_hits >= max(2, code_hits + 1)
+
+    @staticmethod
+    def _is_markdownish_language(language: str) -> bool:
+        return str(language or "").strip().lower() in {"", "text", "markdown", "md"}
+
+    @staticmethod
+    def _is_structured_example_marker(line: str) -> bool:
+        stripped = str(line or "").strip()
+        if not stripped:
+            return False
+        if re.match(r"^===\s*[A-Z0-9 _-]{4,}\s*===\s*$", stripped):
+            return True
+        if re.match(
+            r"^(Question|Response|Nodes Retrieved|Retrieved \d+ chunks?\.?|Answer|Prompt|Output)\s*:",
+            stripped,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        return False
+
+    def _looks_like_structured_example_block(self, content: list[str]) -> bool:
+        marker_hits = sum(1 for line in content if self._is_structured_example_marker(line))
+        if marker_hits >= 2:
+            return True
+        if marker_hits >= 1:
+            english_lines = sum(1 for line in content if re.search(r"[A-Za-z]{4,}", str(line or "")))
+            return english_lines >= 3
+        return False
+
+    def _is_code_like_line(self, line: str, *, language: str) -> bool:
+        stripped = str(line or "").strip()
+        if not stripped:
+            return False
+        if self._is_structured_example_marker(stripped):
+            return True
+        if re.search(
+            r"^(?:\$|PS>|python\b|python3\b|pip\b|pip3\b|npm\b|npx\b|uv\b|curl\b|wget\b|git\b|docker\b|ollama\b|claude\b|node\b|go\b|java\b|javac\b|cargo\b|rustc\b|apt\b|brew\b|sudo\b|scp\b|ssh\b|cd\b|mkdir\b|cp\b|mv\b|rm\b)",
+            stripped,
+            flags=re.IGNORECASE,
+        ):
+            return True
+        if re.search(r"(^|\s)--?[A-Za-z0-9_-]+", stripped):
+            return True
+        if re.search(r"[{}[\]();=<>]|=>|::", stripped):
+            return True
+        if re.search(r"\b(?:from|import|const|let|function|class|def|return|SELECT|INSERT|UPDATE|CREATE)\b", stripped):
+            return True
+        if re.search(r"[A-Za-z0-9_./-]+\.[A-Za-z0-9]{1,8}\b", stripped):
+            return True
+        if self._is_markdownish_language(language):
+            if re.match(r"^#{1,6}\s+[A-Za-z0-9_./-]", stripped):
+                return True
+            if re.match(r"^\*\*[^*:\n]{1,80}:\*\*", stripped):
+                return True
+            if re.match(r"^[-*]\s+[A-Za-z0-9_./-]", stripped):
+                return True
+        return False
+
+    def _is_prose_like_line(self, line: str, *, language: str) -> bool:
+        stripped = str(line or "").strip()
+        if not stripped:
+            return False
+        if self._is_markdownish_language(language) and LocalizationService.looks_like_heading_text(stripped):
+            return True
+        if self._is_markdownish_language(language) and re.match(r"^#{1,6}\s+[\u4e00-\u9fff]", stripped):
+            return True
+        if re.match(r"^\d+\.\s+.*[\u4e00-\u9fff]", stripped):
+            return True
+        chinese_chars = re.findall(r"[\u4e00-\u9fff]", stripped)
+        if re.search(r"[，。；！？：]", stripped) and len(chinese_chars) >= 4:
+            return True
+        if len(chinese_chars) >= 8 and len(stripped) >= 18 and not self._is_code_like_line(stripped, language=language):
+            return True
+        english_words = re.findall(r"[A-Za-z]{3,}", stripped)
+        if len(english_words) >= 5 and re.search(r"[,:;?!]", stripped) and not self._is_code_like_line(stripped, language=language):
+            return True
+        return False
+
+    @staticmethod
+    def _trim_blank_lines(lines: list[str]) -> list[str]:
+        start = 0
+        end = len(lines)
+        while start < end and not str(lines[start] or "").strip():
+            start += 1
+        while end > start and not str(lines[end - 1] or "").strip():
+            end -= 1
+        return [str(line).rstrip() for line in lines[start:end]]
+
+    def _localize_markdown_headings(self, article: str) -> str:
+        text = str(article or "")
+        if not text.strip():
+            return text
+        parts = re.split(r"(```[\s\S]*?```)", text)
+        localized_parts: list[str] = []
+        for idx, part in enumerate(parts):
+            if idx % 2 == 1:
+                localized_parts.append(part)
+                continue
+            lines = part.splitlines(keepends=True)
+            rewritten: list[str] = []
+            for line in lines:
+                stripped = line.lstrip()
+                if not stripped.startswith("#"):
+                    rewritten.append(line)
+                    continue
+                line_break = ""
+                if line.endswith("\r\n"):
+                    line_break = "\r\n"
+                elif line.endswith("\n"):
+                    line_break = "\n"
+                content = line[:-len(line_break)] if line_break else line
+                stripped = content.lstrip()
+                prefix = content[: len(content) - len(stripped)]
+                match = re.match(r"^(#{1,6}\s+)(.+?)\s*$", stripped)
+                if not match:
+                    rewritten.append(line)
+                    continue
+                hashes = match.group(1)
+                heading_text = match.group(2).strip()
+                localized = self._translate_heading_text(heading_text)
+                rewritten.append(f"{prefix}{hashes}{localized}{line_break}")
+            localized_parts.append("".join(rewritten))
+        return "".join(localized_parts)
+
+    def _translate_heading_text(self, heading_text: str) -> str:
+        text = str(heading_text or "").strip()
+        if not text:
+            return text
+        if not re.search(r"[A-Za-z]", text):
+            return text
+        return LocalizationService.localize_heading_text(text)
 
     @staticmethod
     def _parse_cover_dims(text: str) -> dict[str, float]:
@@ -1439,7 +2385,100 @@ class Orchestrator:
             "quiz", "character data", "note-taking", "exercise", "flashcards",
             "beginner quiz", "string quiz", "入门练习", "测验", "刷题", "习题",
         ]
-        return any(keyword in text for keyword in hard_reject_keywords)
+        if any(keyword in text for keyword in hard_reject_keywords):
+            return True
+
+        event_markers = [
+            "workshop", "webinar", "conference", "summit", "meetup", "bootcamp",
+            "training session", "office hours", "live demo", "event", "报名", "直播预告", "活动预告",
+        ]
+        event_cta_markers = [
+            "register", "join us", "sign up", "rsvp", "save your seat", "reserve your spot",
+            "zoom", "eventbrite", "tickets", "free virtual", "立即报名", "欢迎参加",
+        ]
+        commercial_markers = [
+            "direct honor system sales", "honor system sales", "direct sales", "for sale",
+            "buy now", "purchase", "checkout", "payment link", "paypal", "iban",
+            "lemonsqueezy", "gumroad", "pricing", "paid download", "monetization stack",
+            "sales page", "sell code", "sell template", "发售", "售卖", "付款", "收款",
+        ]
+        pricing_pattern = re.search(r"(?<!\w)(?:\$|usd\s?)\s?\d{1,4}(?:\.\d{1,2})?\b", text, flags=re.IGNORECASE)
+        has_event_promo = any(keyword in text for keyword in event_markers) and any(
+            keyword in text for keyword in event_cta_markers
+        )
+        commercial_hits = sum(1 for keyword in commercial_markers if keyword in text)
+        if has_event_promo:
+            return True
+        if pricing_pattern and commercial_hits >= 2:
+            return True
+        return Orchestrator._topic_editorial_penalty_score(item) >= 85.0
+
+    @staticmethod
+    def _topic_editorial_penalty_score(item: dict[str, Any]) -> float:
+        text = " ".join(str(item.get(key, "") or "") for key in ("title", "summary", "url")).lower()
+        event_markers = [
+            "workshop", "webinar", "conference", "summit", "meetup", "bootcamp",
+            "training session", "office hours", "live demo", "event", "??", "????", "????",
+        ]
+        event_cta_markers = [
+            "register", "join us", "sign up", "rsvp", "save your seat", "reserve your spot",
+            "zoom", "eventbrite", "tickets", "free virtual", "register for the zoom", "????", "????",
+        ]
+        commercial_markers = [
+            "direct honor system sales", "honor system sales", "direct sales", "for sale",
+            "buy now", "purchase", "checkout", "payment link", "paypal", "iban",
+            "lemonsqueezy", "gumroad", "pricing", "paid download", "monetization stack",
+            "sales page", "sell code", "sell template", "??", "??", "??", "??",
+        ]
+        promo_markers = [
+            "launching", "launch", "now available", "available now", "announcement",
+            "announcing", "preorder", "limited offer", "special offer", "????", "????",
+        ]
+        access_markers = [
+            "membership", "members only", "subscriber only", "subscription required",
+            "login required", "sign in to continue", "unlock full article", "premium content",
+            "paywalled", "??", "??", "??", "?????", "????", "????",
+        ]
+        data_service_markers = [
+            "????", "?????????", "???????", "??????", "?????",
+            "contact for partnership", "data service", "data services", "request access", "pro.jiqizhixin.com", "/reference/",
+        ]
+        pricing_pattern = re.search(r"(?<!\w)(?:\$|usd\s?)\s?\d{1,4}(?:\.\d{1,2})?\b", text, flags=re.IGNORECASE)
+        event_hits = sum(1 for keyword in event_markers if keyword in text)
+        cta_hits = sum(1 for keyword in event_cta_markers if keyword in text)
+        commercial_hits = sum(1 for keyword in commercial_markers if keyword in text)
+        promo_hits = sum(1 for keyword in promo_markers if keyword in text)
+        access_hits = sum(1 for keyword in access_markers if keyword in text)
+        data_service_hits = sum(1 for keyword in data_service_markers if keyword in text)
+
+        penalty = 0.0
+        if event_hits:
+            penalty += 24.0 + 8.0 * min(event_hits - 1, 2)
+        if cta_hits:
+            penalty += 22.0 + 6.0 * min(cta_hits - 1, 2)
+        if commercial_hits:
+            penalty += 20.0 + 7.0 * min(commercial_hits - 1, 4)
+        if promo_hits:
+            penalty += 8.0 + 4.0 * min(promo_hits - 1, 2)
+        if access_hits:
+            penalty += 18.0 + 8.0 * min(access_hits - 1, 2)
+        if data_service_hits:
+            penalty += 24.0 + 10.0 * min(data_service_hits - 1, 2)
+        if pricing_pattern:
+            penalty += 20.0
+
+        if ("workshop" in text or "webinar" in text or "conference" in text) and (
+            "register" in text or "join us" in text or "zoom" in text or "save your seat" in text
+        ):
+            penalty = max(penalty, 88.0)
+        if "direct honor system sales" in text or ("$19" in text and "direct sales" in text):
+            penalty = max(penalty, 92.0)
+        if "podcast" in text and "transcript" not in text:
+            penalty = max(penalty, 32.0)
+        if data_service_hits >= 2:
+            penalty = max(penalty, 82.0)
+
+        return round(min(penalty, 100.0), 2)
 
     @staticmethod
     def _topic_depth_score(item: dict[str, Any]) -> float:
@@ -1478,6 +2517,118 @@ class Orchestrator:
         score -= 10.0 * sum(1 for keyword in low_value if keyword in text)
         return round(max(0.0, min(score, 100.0)), 2)
 
+    @staticmethod
+    def _topic_evergreen_score(item: dict[str, Any]) -> float:
+        text = " ".join(str(item.get(key, "") or "") for key in ("title", "summary", "url")).lower()
+        positive = [
+            "tutorial", "guide", "how to", "walkthrough", "deep dive", "reference", "playbook",
+            "best practice", "best practices", "pattern", "patterns", "architecture", "implementation",
+            "benchmark", "sdk", "api", "manual", "实战", "教程", "指南", "拆解", "架构", "实现",
+            "手册", "最佳实践", "模式", "案例", "评测", "对比", "工作流",
+        ]
+        negative = [
+            "today", "this week", "daily", "roundup", "newsletter", "breaking", "hot",
+            "launch", "launching", "announce", "announcing", "announcement",
+            "融资", "发布会", "活动", "上新", "日报", "周报", "快讯", "新闻", "本周",
+        ]
+        score = 35.0
+        score += 8.0 * sum(1 for keyword in positive if keyword in text)
+        score -= 10.0 * sum(1 for keyword in negative if keyword in text)
+        return round(max(0.0, min(score, 100.0)), 2)
+
+    @staticmethod
+    def _topic_timeliness_profile(item: dict[str, Any]) -> str:
+        text = " ".join(str(item.get(key, "") or "") for key in ("title", "summary", "url")).lower()
+        technical_keywords = [
+            "tutorial", "guide", "how to", "walkthrough", "deep dive", "reference", "playbook",
+            "architecture", "implementation", "sdk", "api", "best practice",
+            "教程", "指南", "实战", "拆解", "架构", "实现", "工作流", "最佳实践",
+        ]
+        product_keywords = [
+            "launch", "release", "released", "announce", "announcing", "announcement", "upgrade",
+            "product update", "open source", "review", "hands-on", "first look", "benchmark",
+            "上线", "发布", "推出", "升级", "开源", "评测", "测评", "对比", "体验",
+        ]
+        news_keywords = [
+            "today", "this week", "daily", "weekly", "roundup", "newsletter", "breaking", "hot",
+            "news", "trend", "brief", "快讯", "新闻", "日报", "周报", "本周", "今日", "最新动态",
+        ]
+        if any(keyword in text for keyword in news_keywords):
+            return "news"
+        if any(keyword in text for keyword in product_keywords):
+            return "product"
+        if any(keyword in text for keyword in technical_keywords):
+            return "technical"
+        return "default"
+
+    def _timeliness_thresholds(self, profile: str) -> tuple[float, float]:
+        key = str(profile or "default").strip().lower()
+        if key not in {"news", "product", "technical", "default"}:
+            key = "default"
+        soft = max(
+            24.0,
+            float(
+                self.settings.get_float(
+                    f"selection.stale_soft_hours_{key}",
+                    self.settings.get_float("selection.stale_soft_hours_default", 120.0),
+                )
+            ),
+        )
+        hard = max(
+            soft + 24.0,
+            float(
+                self.settings.get_float(
+                    f"selection.stale_hard_hours_{key}",
+                    self.settings.get_float("selection.stale_hard_hours_default", 336.0),
+                )
+            ),
+        )
+        return soft, hard
+
+    def _should_reject_stale_topic(
+        self,
+        *,
+        hours: float,
+        profile: str,
+        evergreen_score: float,
+        value_score: float,
+        depth_score: float,
+    ) -> bool:
+        _, hard_hours = self._timeliness_thresholds(profile)
+        if hours < hard_hours:
+            return False
+        evergreen_floor = float(self.settings.get_float("selection.stale_evergreen_score_floor", 58.0))
+        value_floor = float(self.settings.get_float("selection.stale_evergreen_value_floor", 72.0))
+        depth_floor = float(self.settings.get_float("selection.stale_evergreen_depth_floor", 70.0))
+        return evergreen_score < evergreen_floor and value_score < value_floor and depth_score < depth_floor
+
+    def _topic_staleness_penalty_score(
+        self,
+        *,
+        hours: float,
+        profile: str,
+        evergreen_score: float,
+        value_score: float,
+        depth_score: float,
+    ) -> float:
+        soft_hours, hard_hours = self._timeliness_thresholds(profile)
+        penalty_max = max(0.0, float(self.settings.get_float("selection.stale_penalty_max", 26.0)))
+        if hours <= soft_hours or penalty_max <= 0:
+            return 0.0
+        age_ratio = min(max((hours - soft_hours) / max(hard_hours - soft_hours, 1.0), 0.0), 1.0)
+        evergreen_strength = max(
+            0.0,
+            min(
+                100.0,
+                0.45 * evergreen_score + 0.30 * value_score + 0.25 * depth_score,
+            ),
+        )
+        keep_factor = max(0.15, 1.0 - evergreen_strength / 100.0)
+        penalty = penalty_max * age_ratio * keep_factor
+        if hours >= hard_hours:
+            penalty += penalty_max * 0.35 * keep_factor
+        return round(min(penalty, penalty_max), 2)
+
     def _build_select_prompt(self, candidates: list[dict[str, Any]]) -> str:
         docs = []
         for idx, item in enumerate(candidates):
@@ -1494,6 +2645,8 @@ class Orchestrator:
                         f"深度分: {item.get('depth_score', 0)}",
                         f"价值分: {item.get('value_score', 0)}",
                         f"新信息分: {item.get('novelty_score', 0)}",
+                        f"常青价值分: {item.get('evergreen_score', 0)}",
+                        f"陈旧降权分: {item.get('stale_penalty_score', 0)}",
                         f"正文摘样: {item.get('selection_excerpt', '')[:800]}",
                     ]
                 )
@@ -1504,6 +2657,43 @@ class Orchestrator:
             "目标不是找最早发布的深度文，而是从最近文章里找一个当前仍值得发、信息价值最高、可写出深度解读的题。\n"
             "优先标准：新信息密度、机制细节、工作流价值、产业或产品影响、可形成干货分析。\n"
             "排除倾向：基础教程、练习题、quiz、浅层搬运、老话题重复包装。\n"
+            "请输出 JSON：{\"index\": 0, \"reason\": \"...\"}\n\n"
+            f"{joined}"
+        )
+
+    def _build_select_prompt_v2(self, candidates: list[dict[str, Any]]) -> str:
+        docs: list[str] = []
+        for idx, item in enumerate(candidates):
+            docs.append(
+                "\n".join(
+                    [
+                        f"候选 {idx}",
+                        f"标题: {item.get('title', '')}",
+                        f"来源: {item.get('source', '')}",
+                        f"发布时间: {item.get('published', '')}",
+                        f"摘要: {item.get('summary', '')}",
+                        f"规则分: {item.get('rule_score', 0)}",
+                        f"新鲜度分: {item.get('freshness_score', 0)}",
+                        f"深度分: {item.get('depth_score', 0)}",
+                        f"价值分: {item.get('value_score', 0)}",
+                        f"新信息分: {item.get('novelty_score', 0)}",
+                        f"常青价值分: {item.get('evergreen_score', 0)}",
+                        f"编辑风险分: {item.get('editorial_penalty_score', 0)}",
+                        f"陈旧降权分: {item.get('stale_penalty_score', 0)}",
+                        f"疲劳降权分: {item.get('fatigue_penalty_score', 0)}",
+                        f"原文证据分: {item.get('evidence_score', 0)}",
+                        f"原文证据摘要: {item.get('evidence_summary', '')}",
+                        f"正文摘样: {item.get('selection_excerpt', '')[:800]}",
+                    ]
+                )
+            )
+        joined = "\n\n".join(docs)
+        return (
+            "你是公众号选题编辑。请从下面候选中选出一个最值得今天写成原创解读的主题。\n"
+            "目标不是找最早发布的深度文，而是从最近文章里找一个当前仍值得发、信息价值最高、可写出深度解读的题。\n"
+            "优先标准：新信息密度、机制细节、工作流价值、产业或产品影响、可形成干货分析，而且原文公开信息足够支撑深写。\n"
+            "排除倾向：基础教程、练习题、quiz、浅层搬运、老话题重复包装。\n"
+            "明确排除：活动预告、workshop/webinar/conference 报名页、营销页、销售页、发售公告、主要目的是卖代码/卖模板/引导付款的页面。\n"
             "请输出 JSON：{\"index\": 0, \"reason\": \"...\"}\n\n"
             f"{joined}"
         )
@@ -1529,6 +2719,182 @@ class Orchestrator:
             if 0 <= index < candidate_count:
                 return index
         return -1
+
+    def _apply_source_diversity(self, items: list[dict[str, Any]], *, limit: int, desired: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return list(items[:desired])
+        selected: list[dict[str, Any]] = []
+        counts: dict[str, int] = {}
+        for item in items:
+            family = self._topic_source_family(item)
+            used = counts.get(family, 0)
+            if used < limit:
+                counts[family] = used + 1
+                selected.append(item)
+            if len(selected) >= desired:
+                break
+        return selected[:desired]
+
+    @staticmethod
+    def _topic_source_family(item: dict[str, Any]) -> str:
+        url = str(item.get("url", "") or "").strip()
+        host = normalized_host(url)
+        if host:
+            return host
+        source = str(item.get("source", "") or "").strip().lower()
+        return re.sub(r"[^a-z0-9\u4e00-\u9fff]+", " ", source).strip() or "unknown"
+
+    @staticmethod
+    def _topic_title_key(title: str) -> str:
+        normalized = re.sub(r"[^a-z0-9\u4e00-\u9fff]+", "", str(title or "").lower())
+        return normalized[:80]
+
+    def _topic_fatigue_penalty_score(self, item: dict[str, Any], *, current_run_id: str = "") -> float:
+        lookback_days = max(1.0, float(self.settings.get_float("selection.fatigue_lookback_days", 10.0)))
+        half_life_days = max(0.5, float(self.settings.get_float("selection.fatigue_half_life_days", 2.5)))
+        source_unit = max(0.0, float(self.settings.get_float("selection.source_fatigue_unit", 2.5)))
+        topic_unit = max(0.0, float(self.settings.get_float("selection.topic_fatigue_unit", 4.0)))
+        source_cap = max(0.0, float(self.settings.get_float("selection.source_fatigue_max", 8.0)))
+        topic_cap = max(0.0, float(self.settings.get_float("selection.topic_fatigue_max", 10.0)))
+        total_cap = max(0.0, float(self.settings.get_float("selection.fatigue_total_max", 12.0)))
+
+        current_family = self._topic_source_family(item)
+        current_title_key = self._topic_title_key(str(item.get("title", "") or ""))
+        if not current_family and not current_title_key:
+            return 0.0
+
+        cutoff = _utcnow().timestamp() - lookback_days * 86400.0
+        rows = self.session.execute(
+            select(Run)
+            .where(Run.run_type == "main")
+            .where(Run.id != current_run_id)
+            .where(Run.summary_json != "")
+            .order_by(Run.started_at.desc())
+            .limit(40)
+        ).scalars().all()
+
+        source_penalty = 0.0
+        topic_penalty = 0.0
+        for row in rows:
+            started_at = row.started_at or row.created_at
+            if not started_at:
+                continue
+            if started_at.tzinfo is None:
+                started_at = started_at.replace(tzinfo=timezone.utc)
+            ts = started_at.timestamp()
+            if ts < cutoff:
+                continue
+            try:
+                summary = json.loads(row.summary_json or "{}")
+            except Exception:
+                summary = {}
+            selected_topic = dict(summary.get("selected_topic") or {})
+            prev_family = self._topic_source_family(selected_topic)
+            prev_title_key = self._topic_title_key(str(selected_topic.get("title", "") or ""))
+            age_days = max((_utcnow() - started_at).total_seconds() / 86400.0, 0.0)
+            decay = math.exp(-age_days / half_life_days)
+            if prev_family and prev_family == current_family:
+                source_penalty += source_unit * decay
+            if prev_title_key and current_title_key and prev_title_key == current_title_key:
+                topic_penalty += topic_unit * decay
+
+        source_penalty = min(source_penalty, source_cap)
+        topic_penalty = min(topic_penalty, topic_cap)
+        return round(min(source_penalty + topic_penalty, total_cap), 2)
+
+    def _probe_topic_evidence(self, item: dict[str, Any]) -> dict[str, Any]:
+        url = str(item.get("url", "") or "").strip()
+        if not url:
+            return {"score": 0.0, "summary": "no_url", "status": "skipped"}
+        probe_chars = max(2000, self.settings.get_int("selection.evidence_probe_max_chars", 5000))
+        try:
+            structure = self.fetch.extract_article_structure(url, max_chars=probe_chars)
+        except Exception as exc:
+            return {"score": 0.0, "summary": f"probe_failed: {exc}", "status": "failed"}
+
+        sections = [item for item in (structure.get("sections") or []) if isinstance(item, dict)]
+        code_blocks = list(structure.get("code_blocks") or [])
+        lists = list(structure.get("lists") or [])
+        tables = list(structure.get("tables") or [])
+        coverage = list(structure.get("coverage_checklist") or [])
+        implementation_hits = 0
+        architecture_hits = 0
+        for section in sections:
+            haystack = " ".join(
+                [
+                    str(section.get("heading", "") or ""),
+                    str(section.get("summary", "") or ""),
+                ]
+            ).lower()
+            if re.search(r"(step|workflow|pipeline|graph|mcp|rag|agent|api|sdk|ttl|renewal|lifecycle)", haystack, flags=re.IGNORECASE):
+                implementation_hits += 1
+            if re.search(r"(architecture|agent|mcp|rag|graph|workflow|pipeline|session|component|module)", haystack, flags=re.IGNORECASE):
+                architecture_hits += 1
+
+        score = 0.0
+        if structure.get("status") == "ok":
+            score += 18.0
+        score += min(len(sections) * 7.0, 28.0)
+        score += min(len(code_blocks) * 12.0, 24.0)
+        score += min(len(coverage) * 3.0, 18.0)
+        score += min((len(lists) + len(tables)) * 2.0, 10.0)
+        score += min((implementation_hits + architecture_hits) * 6.0, 18.0)
+        if len(sections) <= 1 and len(code_blocks) == 0 and len(coverage) <= 1:
+            score = min(score, 28.0)
+
+        topic_text = " ".join(
+            [
+                str(item.get("title", "") or ""),
+                str(item.get("summary", "") or ""),
+                str(url),
+                str(structure.get("title", "") or ""),
+                str(structure.get("lead", "") or ""),
+                " ".join(str(section.get("heading", "") or "") for section in sections[:8]),
+            ]
+        ).lower()
+        audio_markers = [
+            "podcast", "episode", "listen", "download mp3", "spotify", "apple podcasts",
+            "overcast", "pocket casts", "podcast addict", "castbox",
+        ]
+        transcript_markers = ["transcript", "full transcript", "show transcript", "episode transcript"]
+        paywall_markers = [
+            "membership", "members only", "subscriber only", "subscription required",
+            "login required", "sign in to continue", "unlock full article", "premium content",
+            "paywalled", "??", "??", "??", "?????", "????", "????",
+        ]
+        data_service_markers = [
+            "????", "?????????", "???????", "??????", "?????",
+            "contact for partnership", "data service", "data services", "request access", "pro.jiqizhixin.com", "/reference/",
+        ]
+        is_audio_page = any(marker in topic_text for marker in audio_markers)
+        has_transcript_signal = any(marker in topic_text for marker in transcript_markers)
+        has_paywall_signal = any(marker in topic_text for marker in paywall_markers)
+        has_data_service_signal = any(marker in topic_text for marker in data_service_markers)
+        if is_audio_page and not has_transcript_signal:
+            score -= 18.0
+        if is_audio_page and len(sections) <= 3 and len(code_blocks) == 0:
+            score -= 12.0
+        if has_paywall_signal:
+            score -= 16.0
+        if has_data_service_signal:
+            score -= 24.0
+        if has_data_service_signal and len(sections) <= 2 and len(code_blocks) == 0:
+            score -= 12.0
+        score = max(score, 0.0)
+        summary = (
+            f"sections={len(sections)}, code={len(code_blocks)}, coverage={len(coverage)}, "
+            f"impl={implementation_hits}, arch={architecture_hits}, audio={is_audio_page}, transcript={has_transcript_signal}, "
+            f"paywall={has_paywall_signal}, data_service={has_data_service_signal}"
+        )
+        return {
+            "score": round(min(score, 100.0), 2),
+            "summary": summary,
+            "status": structure.get("status", "failed"),
+            "is_audio_page": is_audio_page,
+            "has_transcript_signal": has_transcript_signal,
+            "has_paywall_signal": has_paywall_signal,
+            "has_data_service_signal": has_data_service_signal,
+        }
 
     @staticmethod
     def _parse_fact_compress_result(text: str, fact_pack: dict[str, Any]) -> dict[str, Any]:
@@ -1741,7 +3107,10 @@ class Orchestrator:
             payload["summary"] = {
                 "入选 TopN": len(top_n),
                 "TopN 配额": self.settings.get_int("general.top_n", 10),
+                "最低门槛": self.settings.get_float("quality.min_topic_score", 68.0),
             }
+            if ctx.get("topic_gate_warning"):
+                payload["summary"]["门槛提醒"] = ctx.get("topic_gate_warning")
             payload["items"] = [
                 f"{item.get('title', '未命名主题')} | 规则分 {item.get('rule_score', 0)}"
                 for item in top_n[:5]
@@ -1782,6 +3151,21 @@ class Orchestrator:
                 for item in related[:4]
             ]
             payload["raw"] = source_pack
+        elif name == "SOURCE_STRUCTURE":
+            structure = dict(ctx.get("source_structure") or {})
+            sections = list(structure.get("sections") or [])
+            code_blocks = list(structure.get("code_blocks") or [])
+            payload["summary"] = {
+                "结构状态": structure.get("status") or "-",
+                "章节数": len(sections),
+                "代码块数": len(code_blocks),
+                "覆盖清单": len(structure.get("coverage_checklist") or []),
+            }
+            payload["items"] = [
+                f"{item.get('heading', '未命名章节')} | {str(item.get('summary', '') or '')[:100]}"
+                for item in sections[:5]
+            ]
+            payload["raw"] = structure
         elif name == "FACT_PACK":
             fact_pack = dict(ctx.get("fact_pack") or {})
             payload["summary"] = {
@@ -1789,6 +3173,9 @@ class Orchestrator:
                 "目标读者": ctx.get("target_audience") or "-",
                 "关键点数量": len(fact_pack.get("key_points") or []),
                 "相关线索数": len(fact_pack.get("related_topics") or []),
+                "实现步骤数": len(fact_pack.get("implementation_steps") or []),
+                "代码线索数": len(fact_pack.get("code_artifacts") or []),
+                "覆盖清单": len(fact_pack.get("coverage_checklist") or []),
             }
             payload["items"] = [str(item) for item in (fact_pack.get("key_points") or [])[:6]]
             payload["raw"] = fact_pack
@@ -1804,9 +3191,12 @@ class Orchestrator:
             payload["raw"] = fact_compress
         elif name == "WRITE":
             article = str(ctx.get("article_markdown") or "")
+            prose_length = len(self._article_prose_text(article))
+            code_block_count = len(re.findall(r"```[\s\S]*?```", article))
             payload["summary"] = {
                 "文章标题": ctx.get("article_title") or "-",
-                "正文长度": len(article),
+                "正文长度": prose_length,
+                "代码块数": code_block_count,
             }
             payload["items"] = [article[:180] + ("..." if len(article) > 180 else "")] if article else []
             payload["raw"] = {
@@ -1896,7 +3286,14 @@ class Orchestrator:
             "RULE_SCORE": f"规则打分完成，TopN 共 {len(ctx.get('top_n') or [])} 条",
             "RERANK": f"重排完成，TopK 共 {len(ctx.get('top_k') or [])} 条",
             "SELECT": f"已选定主题：{(ctx.get('selected_topic') or {}).get('title', '-')}",
+            "SOURCE_STRUCTURE": f"原文结构已提取：{len((ctx.get('source_structure') or {}).get('sections') or [])} 个章节",
+            "WEB_SEARCH_PLAN": f"联网检索计划已生成：{len((ctx.get('web_search_plan') or {}).get('queries') or [])} 个查询",
+            "WEB_SEARCH_FETCH": f"联网结果已拉取：官方 {len((ctx.get('web_enrich') or {}).get('official_sources') or [])} / 背景 {len((ctx.get('web_enrich') or {}).get('context_sources') or [])}",
+            "FACT_GROUNDING": f"事实分层已完成：硬事实 {len((ctx.get('fact_grounding') or {}).get('hard_facts') or [])} 条",
             "WRITE": f"文章草稿已生成：{ctx.get('article_title') or '-'}",
+            "HALLUCINATION_CHECK": f"事实校验完成：{(ctx.get('hallucination_check') or {}).get('severity', '-')}",
+            "VISUAL_STRATEGY": f"视觉策略已生成：正文配图 {len((ctx.get('visual_strategy') or {}).get('body_illustrations') or [])} 张",
+            "BODY_ILLUSTRATION_GEN": f"正文配图已生成：{len(ctx.get('body_illustrations') or [])} 张",
             "QUALITY_CHECK": f"质检完成，最终得分 {ctx.get('quality_score') or 0}",
             "ARTICLE_RENDER": f"文章 HTML 已渲染：{(ctx.get('article_layout') or {}).get('label', '-')}",
             "COVER_5D": "封面 5D 评分已生成",
@@ -1926,7 +3323,14 @@ class Orchestrator:
             "RULE_SCORE": f"规则打分完成，TopN 共 {len(ctx.get('top_n') or [])} 条",
             "RERANK": f"重排完成，TopK 共 {len(ctx.get('top_k') or [])} 条",
             "SELECT": f"已选定主题：{(ctx.get('selected_topic') or {}).get('title', '-')}",
+            "SOURCE_STRUCTURE": f"原文结构已提取：{len((ctx.get('source_structure') or {}).get('sections') or [])} 个章节",
+            "WEB_SEARCH_PLAN": f"联网检索计划已生成：{len((ctx.get('web_search_plan') or {}).get('queries') or [])} 个查询",
+            "WEB_SEARCH_FETCH": f"联网结果已拉取：官方 {len((ctx.get('web_enrich') or {}).get('official_sources') or [])} / 背景 {len((ctx.get('web_enrich') or {}).get('context_sources') or [])}",
+            "FACT_GROUNDING": f"事实分层已完成：硬事实 {len((ctx.get('fact_grounding') or {}).get('hard_facts') or [])} 条",
             "WRITE": f"文章草稿已生成：{ctx.get('article_title') or '-'}",
+            "HALLUCINATION_CHECK": f"事实校验完成：{(ctx.get('hallucination_check') or {}).get('severity', '-')}",
+            "VISUAL_STRATEGY": f"视觉策略已生成：正文配图 {len((ctx.get('visual_strategy') or {}).get('body_illustrations') or [])} 张",
+            "BODY_ILLUSTRATION_GEN": f"正文配图已生成：{len(ctx.get('body_illustrations') or [])} 张",
             "QUALITY_CHECK": f"质检完成，最终得分 {ctx.get('quality_score') or 0}",
             "ARTICLE_RENDER": f"文章模板已应用：{(ctx.get('article_layout') or {}).get('label', '-')}",
             "COVER_5D": "封面 5 维评估已生成",
@@ -1951,6 +3355,13 @@ class Orchestrator:
             compact["depth_score"] = item.get("depth_score")
             compact["value_score"] = item.get("value_score")
             compact["novelty_score"] = item.get("novelty_score")
+            compact["evergreen_score"] = item.get("evergreen_score")
+            compact["timeliness_profile"] = item.get("timeliness_profile")
+            compact["editorial_penalty_score"] = item.get("editorial_penalty_score")
+            compact["stale_penalty_score"] = item.get("stale_penalty_score")
+            compact["fatigue_penalty_score"] = item.get("fatigue_penalty_score")
+            compact["evidence_score"] = item.get("evidence_score")
+            compact["evidence_summary"] = item.get("evidence_summary")
             compact["llm_score"] = item.get("llm_score")
             compact["final_score"] = item.get("final_score")
             compact["rerank_rank"] = item.get("rerank_rank")

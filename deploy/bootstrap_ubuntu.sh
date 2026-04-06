@@ -21,7 +21,16 @@ fi
 
 echo "[2/8] install system packages"
 apt-get update
-apt-get install -y python3 python3-venv python3-pip rsync
+apt-get install -y \
+  python3 \
+  python3-venv \
+  python3-pip \
+  rsync \
+  fontconfig \
+  fonts-noto-cjk \
+  fonts-wqy-zenhei \
+  fonts-wqy-microhei
+fc-cache -f >/dev/null 2>&1 || true
 
 echo "[3/8] prepare dirs"
 mkdir -p "${APP_HOME}" /var/log/wechat-agent-lite

@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import base64
 import html
 import json
 import mimetypes
 import re
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -65,6 +67,7 @@ class WeChatService:
         sent_author = self._prepare_author(author)
         sent_digest = self._digest(markdown_content)
         final_html = str(html_content or "").strip() or self._markdown_to_html(markdown_content)
+        final_html = self._prepare_html_images_for_wechat(token=token, html_content=final_html)
         article = {
             "title": sent_title,
             "author": sent_author,
@@ -158,6 +161,103 @@ class WeChatService:
             else:
                 out.append(f"<p>{html.escape(line)}</p>")
         return "\n".join(out)
+
+    def _prepare_html_images_for_wechat(self, *, token: str, html_content: str) -> str:
+        content = str(html_content or "").strip()
+        if not content:
+            return content
+
+        img_pattern = re.compile(r'(<img\b[^>]*\bsrc=")([^"]+)(")', flags=re.IGNORECASE)
+        cache: dict[str, str] = {}
+
+        def replace(match: re.Match[str]) -> str:
+            prefix, src, suffix = match.groups()
+            original_src = str(src or "").strip()
+            if not original_src:
+                return match.group(0)
+            if original_src in cache:
+                return f"{prefix}{cache[original_src]}{suffix}"
+            if self._is_wechat_image_url(original_src):
+                cache[original_src] = original_src
+                return match.group(0)
+            try:
+                uploaded_url = self._upload_article_image(token=token, src=original_src)
+            except Exception:
+                return match.group(0)
+            cache[original_src] = uploaded_url
+            return f"{prefix}{uploaded_url}{suffix}"
+
+        return img_pattern.sub(replace, content)
+
+    def _upload_article_image(self, *, token: str, src: str) -> str:
+        value = str(src or "").strip()
+        if value.startswith("data:image/"):
+            return self._upload_data_image(token=token, data_url=value)
+        if value.startswith("http://") or value.startswith("https://"):
+            return self._upload_remote_image(token=token, url=value)
+        return self._upload_local_image(token=token, image_path=Path(value))
+
+    def _upload_data_image(self, *, token: str, data_url: str) -> str:
+        match = re.match(r"^data:(image/[^;]+);base64,(.+)$", data_url, flags=re.IGNORECASE | re.DOTALL)
+        if not match:
+            raise RuntimeError("invalid data image url")
+        mime_type = match.group(1).strip().lower()
+        payload = base64.b64decode(match.group(2).strip())
+        suffix = mimetypes.guess_extension(mime_type) or ".png"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(payload)
+            temp_path = Path(tmp.name)
+        try:
+            return self._upload_image_for_article(token=token, image_path=temp_path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _upload_remote_image(self, *, token: str, url: str) -> str:
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        mime_type = response.headers.get("Content-Type", "").split(";")[0].strip() or "image/png"
+        suffix = mimetypes.guess_extension(mime_type) or ".png"
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+            tmp.write(response.content)
+            temp_path = Path(tmp.name)
+        try:
+            return self._upload_image_for_article(token=token, image_path=temp_path)
+        finally:
+            try:
+                temp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+    def _upload_local_image(self, *, token: str, image_path: Path) -> str:
+        if not image_path.exists() or not image_path.is_file():
+            raise RuntimeError(f"image not found: {image_path}")
+        return self._upload_image_for_article(token=token, image_path=image_path)
+
+    def _upload_image_for_article(self, *, token: str, image_path: Path) -> str:
+        mime_type, _ = mimetypes.guess_type(image_path.name)
+        with image_path.open("rb") as file_obj:
+            response = requests.post(
+                f"{self.BASE}/media/uploadimg",
+                params={"access_token": token},
+                files={"media": (image_path.name, file_obj, mime_type or "image/png")},
+                timeout=60,
+            )
+        response.raise_for_status()
+        data = response.json()
+        if int(data.get("errcode", 0)) != 0:
+            raise RuntimeError(f"{data.get('errcode')} {data.get('errmsg', '')}".strip())
+        url = str(data.get("url", "")).strip()
+        if not url:
+            raise RuntimeError("wechat uploadimg succeeded but no url returned")
+        return url
+
+    @staticmethod
+    def _is_wechat_image_url(url: str) -> bool:
+        lowered = str(url or "").strip().lower()
+        return "mmbiz.qpic.cn" in lowered or "mmbiz.qlogo.cn" in lowered
 
     def _get_access_token(self, app_id: str, app_secret: str) -> str:
         response = requests.get(

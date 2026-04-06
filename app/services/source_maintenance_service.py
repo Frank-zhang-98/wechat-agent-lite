@@ -42,6 +42,7 @@ class SourceMaintenanceService:
         llm: LLMGateway,
         scrapling: ScraplingFallbackService | None = None,
         progress_callback: Callable[[dict[str, Any]], None] | None = None,
+        cancel_checker: Callable[[], None] | None = None,
     ):
         self.session = session
         self.settings = settings
@@ -49,8 +50,10 @@ class SourceMaintenanceService:
         self.llm = llm
         self.scrapling = scrapling
         self.progress_callback = progress_callback
+        self.cancel_checker = cancel_checker
 
     def run(self, run_id: str) -> dict[str, Any]:
+        self._check_cancelled()
         report: dict[str, Any] = {
             "enabled": self.settings.get_bool("source_maintenance.enabled", True),
             "checked_sources": 0,
@@ -122,6 +125,7 @@ class SourceMaintenanceService:
             max_workers=inspect_workers,
             per_host_limit=per_host_limit,
         ):
+            self._check_cancelled()
             if error is not None or result is None:
                 inspection = {
                     **job,
@@ -187,6 +191,7 @@ class SourceMaintenanceService:
                 }
             )
         if llm_review_items and max_llm_cases > 0:
+            self._check_cancelled()
             decisions, audit = self._decision_actions(run_id=run_id, failed_items=llm_review_items)
             report["llm_used"] = bool(audit.get("prompts"))
             report["audit"] = audit
@@ -194,6 +199,7 @@ class SourceMaintenanceService:
         changed = False
         recent_actions: list[dict[str, Any]] = []
         for item in inspections:
+            self._check_cancelled()
             action_result = self._resolve_action(item=item, llm_decision=decisions.get(item["source_key"]))
             if action_result["applied"]:
                 changed = True
@@ -239,6 +245,10 @@ class SourceMaintenanceService:
             }
         )
         return report
+
+    def _check_cancelled(self) -> None:
+        if self.cancel_checker:
+            self.cancel_checker()
 
     def _inspect_source_network(self, job: dict[str, Any]) -> dict[str, Any]:
         source = job.get("source_ref") or {}

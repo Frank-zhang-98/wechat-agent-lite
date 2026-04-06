@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import os
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from threading import BoundedSemaphore
 from typing import Any
@@ -132,13 +131,12 @@ class ScraplingFallbackService:
             raise RuntimeError(discovered.get("error") or "no_article_links_found")
         items: list[dict[str, Any]] = []
         for article in list(discovered["articles"])[:max_items]:
-            published = str(article.get("published", "") or datetime.now(timezone.utc).isoformat())
             items.append(
                 {
-                    "title": str(article.get("title", "") or article.get("url", "") or "").strip(),
+                    "title": str(article.get("title", "") or "").strip(),
                     "url": str(article.get("url", "") or "").strip(),
                     "summary": str(article.get("summary", "") or "").strip()[:500],
-                    "published": published,
+                    "published": str(article.get("published", "") or "").strip(),
                     "source": source_name,
                     "source_weight": float(source_weight),
                     "type": "html_list",

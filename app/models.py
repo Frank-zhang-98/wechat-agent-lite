@@ -19,6 +19,7 @@ class RunStatus(str, enum.Enum):
     running = "running"
     success = "success"
     failed = "failed"
+    cancelled = "cancelled"
     partial_success = "partial_success"
 
 
@@ -27,6 +28,7 @@ class StepStatus(str, enum.Enum):
     running = "running"
     success = "success"
     failed = "failed"
+    cancelled = "cancelled"
     skipped = "skipped"
 
 
@@ -34,6 +36,7 @@ class RunType(str, enum.Enum):
     health = "health"
     main = "main"
     manual = "manual"
+    manual_url = "manual_url"
 
 
 class ConfigEntry(Base):

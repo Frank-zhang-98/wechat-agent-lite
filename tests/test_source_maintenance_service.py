@@ -25,6 +25,10 @@ class FakeResponse:
         self.headers = {"Content-Type": content_type}
         self.url = url
 
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise RuntimeError(f"http_{self.status_code}")
+
 
 class FakeScrapling:
     def __init__(self, discoveries: dict[str, dict] | None = None):
@@ -389,13 +393,13 @@ class SourceMaintenanceServiceTests(unittest.TestCase):
                             "url": "https://example.com/blog/post-one",
                             "title": "Post One",
                             "summary": "Summary one",
-                            "published": "2026-03-29T00:00:00+00:00",
+                            "published": "2026-04-05T00:00:00+00:00",
                         },
                         {
                             "url": "https://example.com/blog/post-two",
                             "title": "Post Two",
                             "summary": "Summary two",
-                            "published": "2026-03-28T00:00:00+00:00",
+                            "published": "2026-04-04T00:00:00+00:00",
                         },
                     ]
                 }
@@ -417,6 +421,119 @@ class SourceMaintenanceServiceTests(unittest.TestCase):
         self.assertEqual(items[0]["type"], "html_list")
         self.assertEqual(items[0]["source"], "HTML Source")
         self.assertEqual(items[0]["url"], "https://example.com/blog/post-one")
+
+    def test_fetch_html_list_enriches_missing_title_and_published_from_article_page(self) -> None:
+        scrapling = FakeScrapling(
+            {
+                "https://example.com/blog": {
+                    "articles": [
+                        {
+                            "url": "https://example.com/blog/2024-ai-first",
+                            "title": "https://example.com/blog/2024-ai-first",
+                            "summary": "",
+                            "published": "",
+                        }
+                    ]
+                }
+            }
+        )
+
+        article_html = """
+        <html>
+          <head>
+            <meta property="og:title" content="AI First 年度总结" />
+            <meta property="article:published_time" content="2025-01-15T10:00:00+08:00" />
+          </head>
+          <body>
+            <article>
+              <p>这是正文第一段，足够长，而且包含完整语义信息，可以稳定作为摘要使用，不会被最小长度阈值过滤掉。</p>
+            </article>
+          </body>
+        </html>
+        """
+
+        with patch.object(
+            self.fetch,
+            "_request",
+            return_value=FakeResponse(
+                status_code=200,
+                text=article_html,
+                content_type="text/html; charset=utf-8",
+                url="https://example.com/blog/2024-ai-first",
+            ),
+        ):
+            items = self.fetch.fetch_source(
+                {
+                    "name": "HTML Source",
+                    "url": "https://example.com/blog",
+                    "mode": "html_list",
+                    "weight": 0.9,
+                },
+                max_age_hours=99999,
+                max_items=5,
+                scrapling=scrapling,
+            )
+
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["title"], "AI First 年度总结")
+        self.assertEqual(items[0]["published"], "2025-01-15T10:00:00+08:00")
+        self.assertIn("这是正文第一段", items[0]["summary"])
+
+    def test_fetch_html_list_extracts_visible_cn_date_when_meta_missing(self) -> None:
+        scrapling = FakeScrapling(
+            {
+                "https://example.com/blog": {
+                    "articles": [
+                        {
+                            "url": "https://example.com/blog/2024-ai-first",
+                            "title": "https://example.com/blog/2024-ai-first",
+                            "summary": "",
+                            "published": "",
+                        }
+                    ]
+                }
+            }
+        )
+
+        article_html = """
+        <html>
+          <head>
+            <title>零一万物 2024 年终总结</title>
+          </head>
+          <body>
+            <article>
+              <h1>零一万物 2024 年终总结：聚焦轻量化模型，加速 AI-First 应用探索</h1>
+              <p>2025年1月23日</p>
+              <p>2024 年对于中国大模型领域来说，是充满变革与突破的一年，这一段足够长，可以作为摘要使用。</p>
+            </article>
+          </body>
+        </html>
+        """
+
+        with patch.object(
+            self.fetch,
+            "_request",
+            return_value=FakeResponse(
+                status_code=200,
+                text=article_html,
+                content_type="text/html; charset=utf-8",
+                url="https://example.com/blog/2024-ai-first",
+            ),
+        ):
+            items = self.fetch.fetch_source(
+                {
+                    "name": "HTML Source",
+                    "url": "https://example.com/blog",
+                    "mode": "html_list",
+                    "weight": 0.9,
+                },
+                max_age_hours=99999,
+                max_items=5,
+                scrapling=scrapling,
+            )
+
+        self.assertEqual(len(items), 1)
+        self.assertTrue(items[0]["published"].startswith("2025-01-23T00:00:00"))
 
     def test_scrapling_fallback_forwards_proxy(self) -> None:
         from app.services.scrapling_fallback_service import ScraplingFallbackService
@@ -479,6 +596,9 @@ class OrchestratorSourceMaintenanceTests(unittest.TestCase):
             self.orch._run_main(run, ctx)
 
         self.assertEqual(executed_steps[:3], ["HEALTH_CHECK", "SOURCE_MAINTENANCE", "FETCH"])
+        self.assertIn("SOURCE_STRUCTURE", executed_steps)
+        self.assertLess(executed_steps.index("SOURCE_ENRICH"), executed_steps.index("SOURCE_STRUCTURE"))
+        self.assertLess(executed_steps.index("SOURCE_STRUCTURE"), executed_steps.index("FACT_PACK"))
         self.assertIn("ARTICLE_RENDER", executed_steps)
         self.assertLess(executed_steps.index("QUALITY_CHECK"), executed_steps.index("ARTICLE_RENDER"))
         self.assertLess(executed_steps.index("ARTICLE_RENDER"), executed_steps.index("COVER_5D"))

@@ -3,6 +3,7 @@ default_layout: clean_reading
 content_type_map:
   tool_review: product_review
   tutorial: practical_tutorial
+  technical_walkthrough: practical_tutorial
   industry_analysis: editorial_analysis
 
 layouts:

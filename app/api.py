@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 from fastapi.responses import FileResponse
 from sqlalchemy import select
+from sqlalchemy.exc import OperationalError
 
-from app.db import get_session
+from app.db import get_read_session, get_session
 from app.core.config import CONFIG
 from app.models import Run, RunStep, SourceHealthState
 from app.schemas import ConfigUpdatePayload, RunActionPayload, TriggerRunPayload
@@ -166,8 +168,14 @@ def health() -> dict:
 
 @router.get("/source-health")
 def source_health() -> dict:
-    with get_session() as session:
-        return _build_source_health_snapshot(session)
+    try:
+        with get_read_session() as session:
+            snapshot = _build_source_health_snapshot(session)
+    except OperationalError:
+        snapshot = state.source_health_snapshot or {"summary": {}, "sources": [], "active_maintenance": None}
+    else:
+        state.source_health_snapshot = snapshot
+    return snapshot
 
 
 @router.get("/settings")
@@ -219,10 +227,26 @@ def parse_proxy_share_link(payload: ConfigUpdatePayload) -> dict:
 
 @router.post("/runs/trigger")
 def trigger_run(payload: TriggerRunPayload, background_tasks: BackgroundTasks) -> dict:
+    source_url = (payload.source_url or "").strip()
     run_type = payload.run_type if payload.run_type in {"main", "health"} else "main"
+    if source_url:
+        parsed = urlparse(source_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise HTTPException(status_code=400, detail="source_url must be a valid http(s) URL")
+        run_type = "manual_url"
     with get_session() as session:
         orch = Orchestrator(session)
         run = orch.create_run(run_type=run_type, trigger_source=payload.trigger_source, status="pending")
+        if source_url:
+            run.summary_json = json.dumps(
+                {
+                    "manual_input": {
+                        "source_url": source_url,
+                    }
+                },
+                ensure_ascii=False,
+            )
+            session.flush()
         run_id = run.id
     background_tasks.add_task(_execute_run_background, run_id)
     return {"ok": True, "run_id": run_id, "status": "pending"}
@@ -237,6 +261,18 @@ def run_action(run_id: str, payload: RunActionPayload) -> dict:
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"ok": True, "new_run_id": run.id, "status": run.status}
+
+
+@router.post("/runs/{run_id}/cancel")
+def cancel_run(run_id: str) -> dict:
+    with get_session() as session:
+        run = session.get(Run, run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="run not found")
+        if run.status in {"success", "failed", "partial_success", "cancelled"}:
+            return {"ok": True, "run_id": run.id, "status": run.status, "message": "run already finished"}
+    state.request_run_cancel(run_id)
+    return {"ok": True, "run_id": run_id, "status": "cancelling", "message": "cancel requested"}
 
 
 @router.get("/runs")

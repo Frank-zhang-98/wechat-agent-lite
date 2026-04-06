@@ -37,6 +37,11 @@ class SettingsService:
             pending_keys.add(key)
 
     def get(self, key: str, default: str = "") -> str:
+        pending = self._get_pending_entry(key)
+        if pending:
+            if pending.is_secret:
+                return decrypt_text(pending.value)
+            return pending.value
         row = self.session.get(ConfigEntry, key)
         if not row:
             return default

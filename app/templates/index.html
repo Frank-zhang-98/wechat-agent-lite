@@ -1889,9 +1889,16 @@
         <section id="module-trigger" class="card module-panel active">
           <h3>任务触发</h3>
           <p class="small">在这里手动执行健康检查或主任务，适合首次部署后的联调与回归测试。</p>
+          <div class="schedule-input" style="margin-top:12px">
+            <label class="label" for="manualSourceUrl">指定文章链接</label>
+            <input id="manualSourceUrl" placeholder="https://example.com/article" />
+            <div class="schedule-hint">输入一个原文链接后，系统会跳过热点抓取和选题筛选，直接沿用现有写作、配图、质检与公众号投递流程处理这篇文章。</div>
+          </div>
           <div class="btns">
             <button id="triggerHealthBtn" onclick="triggerRun('health', this)">执行 08:30 健康检查</button>
             <button id="triggerMainBtn" class="secondary" onclick="triggerRun('main', this)">执行 09:00 主任务</button>
+            <button id="triggerUrlBtn" class="secondary" onclick="triggerUrlRun(this)">处理指定链接并发送公众号</button>
+            <button id="stopCurrentRunBtn" class="secondary" onclick="stopCurrentRun()" disabled>停止当前任务</button>
           </div>
           <div id="triggerStatus" class="trigger-status" aria-live="polite"></div>
           <div id="triggerProgress" class="trigger-progress-shell"></div>
@@ -1936,6 +1943,7 @@
               <option value="">全部类型</option>
               <option value="main">主任务</option>
               <option value="health">健康检查</option>
+              <option value="manual_url">链接直跑</option>
               <option value="manual">手动任务</option>
             </select>
             <select id="runsSortOrder">
@@ -2015,6 +2023,18 @@
               <div class="schedule-hint">文章质检达到该分数后才视为通过；否则会继续优化或走兜底策略。</div>
             </div>
           </div>
+          <div class="metric-shell" style="margin-top:16px">
+            <div class="source-health-card" style="grid-column:1 / -1">
+              <span>选题时效策略</span>
+              <strong>三档窗口自动取舍</strong>
+              <div class="small" style="margin-top:8px;line-height:1.8;color:var(--muted)">
+                新闻快讯：3 天内优先，7 天后若缺乏持续价值会被过滤。<br/>
+                产品发布与评测：7 天内优先，约 21 天后若不够深或不够有用会被过滤。<br/>
+                技术拆解与教程：30 天内基本正常参与，60 天后若不具备常青价值才会被过滤。<br/>
+                系统会综合新鲜度、价值分、深度分和常青价值分来判断，而不是只看发布时间。
+              </div>
+            </div>
+          </div>
           <div class="btns" style="margin-top:10px">
             <button onclick="saveScheduling()">保存调度配置</button>
           </div>
@@ -2022,23 +2042,23 @@
 
         <section id="module-models" class="card module-panel">
           <h3>模型配置（每个模型独立 API）</h3>
-          <p class="small">按模型职责拆分配置。若供应商选择阿里云百炼，只需填写 API Key 并选择模型名称；若选择其他供应商，则继续按 Base URL、API Key、Model ID 自定义。</p>
+          <p class="small">按模型职责拆分配置。若供应商选择阿里云百炼，只需填写 API 密钥并选择模型名称；若选择其他供应商，则继续按接口地址、API 密钥、模型 ID 自定义。</p>
           <div class="model-groups">
           <article class="model-group">
             <div class="model-group-head">
-              <h4 class="model-group-title">Decision LLM</h4>
-              <span class="info-dot" tabindex="0" aria-label="Decision LLM 说明">?</span>
+              <h4 class="model-group-title">决策模型</h4>
+              <span class="info-dot" tabindex="0" aria-label="决策模型说明">?</span>
               <div class="model-tooltip">负责工作流中的判断、质检与事实压缩。它会参与主题重排、文章质量评估，以及 FACT_COMPRESS 步骤中的正文事实提纯，所以更适合选择稳定、结构化输出能力较强的模型。</div>
             </div>
             <div class="model-fields">
               <div class="model-field"><label class="label">供应商</label><select id="m_decision_provider" onchange="syncModelProviderUi('decision')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
-              <div class="model-field"><label class="label">API Key</label><input id="m_decision_key" /></div>
+              <div class="model-field"><label class="label">API 密钥</label><input id="m_decision_key" /></div>
               <div class="model-field" id="m_decision_bailian_field"><label class="label">模型名称</label><select id="m_decision_bailian_model"></select></div>
             </div>
             <div class="model-mode-block" id="m_decision_custom_block" hidden>
               <div class="model-fields">
-                <div class="model-field"><label class="label">Base URL</label><input id="m_decision_base" /></div>
-                <div class="model-field"><label class="label">Model ID</label><input id="m_decision_model" /></div>
+                <div class="model-field"><label class="label">接口地址</label><input id="m_decision_base" /></div>
+                <div class="model-field"><label class="label">模型 ID</label><input id="m_decision_model" /></div>
               </div>
             </div>
             <div class="small">服务步骤：`RERANK`、`QUALITY_CHECK`、`FACT_COMPRESS`</div>
@@ -2047,19 +2067,19 @@
 
           <article class="model-group">
             <div class="model-group-head">
-              <h4 class="model-group-title">Rerank LLM</h4>
-              <span class="info-dot" tabindex="0" aria-label="Rerank LLM 说明">?</span>
+              <h4 class="model-group-title">重排模型</h4>
+              <span class="info-dot" tabindex="0" aria-label="重排模型说明">?</span>
               <div class="model-tooltip">负责对候选话题或候选结果进行二次排序，让更适合公众号文章的内容优先排在前面。</div>
             </div>
             <div class="model-fields">
               <div class="model-field"><label class="label">供应商</label><select id="m_rerank_provider" onchange="syncModelProviderUi('rerank')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
-              <div class="model-field"><label class="label">API Key</label><input id="m_rerank_key" /></div>
+              <div class="model-field"><label class="label">API 密钥</label><input id="m_rerank_key" /></div>
               <div class="model-field" id="m_rerank_bailian_field"><label class="label">模型名称</label><select id="m_rerank_bailian_model"></select></div>
             </div>
             <div class="model-mode-block" id="m_rerank_custom_block" hidden>
               <div class="model-fields">
-                <div class="model-field"><label class="label">Base URL</label><input id="m_rerank_base" /></div>
-                <div class="model-field"><label class="label">Model ID</label><input id="m_rerank_model" /></div>
+                <div class="model-field"><label class="label">接口地址</label><input id="m_rerank_base" /></div>
+                <div class="model-field"><label class="label">模型 ID</label><input id="m_rerank_model" /></div>
               </div>
             </div>
             <div class="model-inline-hint" id="m_rerank_bailian_hint">若选择百炼专用重排模型，系统会自动切换到原生排序接口，无需你再手填 URL。正文感知重排时，候选数量和摘样长度越大，超时档位会自动提高。</div>
@@ -2067,19 +2087,19 @@
 
           <article class="model-group">
             <div class="model-group-head">
-              <h4 class="model-group-title">Writer LLM</h4>
-              <span class="info-dot" tabindex="0" aria-label="Writer LLM 说明">?</span>
+              <h4 class="model-group-title">写作模型</h4>
+              <span class="info-dot" tabindex="0" aria-label="写作模型说明">?</span>
               <div class="model-tooltip">负责生成文章正文内容，把选题、结构和写作要求扩展为完整可发布的文案。</div>
             </div>
             <div class="model-fields">
               <div class="model-field"><label class="label">供应商</label><select id="m_writer_provider" onchange="syncModelProviderUi('writer')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
-              <div class="model-field"><label class="label">API Key</label><input id="m_writer_key" /></div>
+              <div class="model-field"><label class="label">API 密钥</label><input id="m_writer_key" /></div>
               <div class="model-field" id="m_writer_bailian_field"><label class="label">模型名称</label><select id="m_writer_bailian_model"></select></div>
             </div>
             <div class="model-mode-block" id="m_writer_custom_block" hidden>
               <div class="model-fields">
-                <div class="model-field"><label class="label">Base URL</label><input id="m_writer_base" /></div>
-                <div class="model-field"><label class="label">Model ID</label><input id="m_writer_model" /></div>
+                <div class="model-field"><label class="label">接口地址</label><input id="m_writer_base" /></div>
+                <div class="model-field"><label class="label">模型 ID</label><input id="m_writer_model" /></div>
               </div>
             </div>
             <div class="model-inline-hint" id="m_writer_bailian_hint">正文模型建议优先选择 `qwen-plus` 或 `qwen-max`，可在效果与成本之间灵活切换。系统不会裁剪正文质量所需输入，而是根据 prompt 复杂度自动提高超时档位。</div>
@@ -2087,19 +2107,19 @@
 
           <article class="model-group">
             <div class="model-group-head">
-              <h4 class="model-group-title">Cover Prompt LLM</h4>
-              <span class="info-dot" tabindex="0" aria-label="Cover Prompt LLM 说明">?</span>
+              <h4 class="model-group-title">封面提示词模型</h4>
+              <span class="info-dot" tabindex="0" aria-label="封面提示词模型说明">?</span>
               <div class="model-tooltip">负责把文章内容转换为高质量封面提示词，给图像模型提供更明确的视觉生成描述。</div>
             </div>
             <div class="model-fields">
               <div class="model-field"><label class="label">供应商</label><select id="m_cover_prompt_provider" onchange="syncModelProviderUi('cover_prompt')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
-              <div class="model-field"><label class="label">API Key</label><input id="m_cover_prompt_key" /></div>
+              <div class="model-field"><label class="label">API 密钥</label><input id="m_cover_prompt_key" /></div>
               <div class="model-field" id="m_cover_prompt_bailian_field"><label class="label">模型名称</label><select id="m_cover_prompt_bailian_model"></select></div>
             </div>
             <div class="model-mode-block" id="m_cover_prompt_custom_block" hidden>
               <div class="model-fields">
-                <div class="model-field"><label class="label">Base URL</label><input id="m_cover_prompt_base" /></div>
-                <div class="model-field"><label class="label">Model ID</label><input id="m_cover_prompt_model" /></div>
+                <div class="model-field"><label class="label">接口地址</label><input id="m_cover_prompt_base" /></div>
+                <div class="model-field"><label class="label">模型 ID</label><input id="m_cover_prompt_model" /></div>
               </div>
             </div>
             <div class="model-inline-hint" id="m_cover_prompt_bailian_hint">封面提示词通常用轻量文本模型就够了，百炼模式下可直接从常用模型中选择。</div>
@@ -2107,19 +2127,19 @@
 
           <article class="model-group">
             <div class="model-group-head">
-              <h4 class="model-group-title">Cover Image LLM</h4>
-              <span class="info-dot" tabindex="0" aria-label="Cover Image LLM 说明">?</span>
+              <h4 class="model-group-title">封面图片模型</h4>
+              <span class="info-dot" tabindex="0" aria-label="封面图片模型说明">?</span>
               <div class="model-tooltip">负责根据封面提示词生成最终封面图或配图，直接决定文章对外展示时的视觉效果。</div>
             </div>
             <div class="model-fields">
               <div class="model-field"><label class="label">供应商</label><select id="m_cover_image_provider" onchange="syncModelProviderUi('cover_image')"><option value="aliyun_bailian">阿里云百炼</option><option value="custom">其他供应商 / 自定义</option></select></div>
-              <div class="model-field"><label class="label">API Key</label><input id="m_cover_image_key" /></div>
+              <div class="model-field"><label class="label">API 密钥</label><input id="m_cover_image_key" /></div>
               <div class="model-field" id="m_cover_image_bailian_field"><label class="label">模型名称</label><select id="m_cover_image_bailian_model"></select></div>
             </div>
             <div class="model-mode-block" id="m_cover_image_custom_block" hidden>
               <div class="model-fields">
-                <div class="model-field"><label class="label">Base URL</label><input id="m_cover_image_base" /></div>
-                <div class="model-field"><label class="label">Model ID</label><input id="m_cover_image_model" /></div>
+                <div class="model-field"><label class="label">接口地址</label><input id="m_cover_image_base" /></div>
+                <div class="model-field"><label class="label">模型 ID</label><input id="m_cover_image_model" /></div>
               </div>
             </div>
             <div class="model-inline-hint" id="m_cover_image_bailian_hint">若选择百炼图片模型，保存后系统会自动走原生文生图接口；若改用其他平台，切回自定义即可。</div>
@@ -2230,6 +2250,7 @@
       running: '运行中',
       success: '成功',
       failed: '失败',
+      cancelled: '已停止',
       partial_success: '部分成功'
     };
     const SOURCE_STATUS_LABELS = {
@@ -2241,11 +2262,11 @@
       unknown: '未检查'
     };
     const ROLE_LABELS = {
-      decision: 'Decision',
-      rerank: 'Rerank',
-      writer: 'Writer',
-      cover_prompt: 'Cover Prompt',
-      cover_image: 'Cover Image'
+      decision: '决策',
+      rerank: '重排',
+      writer: '写作',
+      cover_prompt: '封面提示词',
+      cover_image: '封面图片'
     };
     const MODEL_ROLES = ['decision', 'rerank', 'writer', 'cover_prompt', 'cover_image'];
     const BAILIAN_BASE_URL = 'https://dashscope.aliyuncs.com/compatible-mode/v1';
@@ -2308,10 +2329,37 @@
     let triggerProgressTimer = null;
     let activeTriggerRunId = '';
     const RUNS_PAGE_SIZE = 8;
-    const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'partial_success']);
+    const TERMINAL_RUN_STATUSES = new Set(['success', 'failed', 'cancelled', 'partial_success']);
     const RUN_STEP_ORDER = {
-      main: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE', 'FETCH', 'DEDUP', 'RULE_SCORE', 'RERANK', 'SELECT', 'SOURCE_ENRICH', 'FACT_PACK', 'FACT_COMPRESS', 'WRITE', 'QUALITY_CHECK', 'ARTICLE_RENDER', 'COVER_5D', 'COVER_GEN', 'COVER_CHECK', 'WECHAT_DRAFT'],
+      main: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE', 'FETCH', 'DEDUP', 'RULE_SCORE', 'RERANK', 'SELECT', 'SOURCE_ENRICH', 'SOURCE_STRUCTURE', 'WEB_SEARCH_PLAN', 'WEB_SEARCH_FETCH', 'FACT_GROUNDING', 'FACT_PACK', 'FACT_COMPRESS', 'WRITE', 'HALLUCINATION_CHECK', 'VISUAL_STRATEGY', 'BODY_ILLUSTRATION_GEN', 'QUALITY_CHECK', 'ARTICLE_RENDER', 'COVER_5D', 'COVER_GEN', 'COVER_CHECK', 'WECHAT_DRAFT'],
+      manual_url: ['SOURCE_ENRICH', 'SOURCE_STRUCTURE', 'WEB_SEARCH_PLAN', 'WEB_SEARCH_FETCH', 'FACT_GROUNDING', 'FACT_PACK', 'FACT_COMPRESS', 'WRITE', 'HALLUCINATION_CHECK', 'VISUAL_STRATEGY', 'BODY_ILLUSTRATION_GEN', 'QUALITY_CHECK', 'ARTICLE_RENDER', 'COVER_5D', 'COVER_GEN', 'COVER_CHECK', 'WECHAT_DRAFT'],
       health: ['HEALTH_CHECK', 'SOURCE_MAINTENANCE']
+    };
+    const STEP_LABELS = {
+      HEALTH_CHECK: '健康检查',
+      SOURCE_MAINTENANCE: '抓取源巡检',
+      FETCH: '抓取候选',
+      DEDUP: '候选去重',
+      RULE_SCORE: '规则评分',
+      RERANK: '模型重排',
+      SELECT: '主题选择',
+      SOURCE_ENRICH: '原文抓取',
+      SOURCE_STRUCTURE: '结构提取',
+      WEB_SEARCH_PLAN: '联网规划',
+      WEB_SEARCH_FETCH: '联网补充',
+      FACT_GROUNDING: '事实校准',
+      FACT_PACK: '事实组装',
+      FACT_COMPRESS: '事实压缩',
+      WRITE: '生成正文',
+      HALLUCINATION_CHECK: '幻觉检查',
+      VISUAL_STRATEGY: '配图规划',
+      BODY_ILLUSTRATION_GEN: '正文配图',
+      QUALITY_CHECK: '质量检查',
+      ARTICLE_RENDER: '文章渲染',
+      COVER_5D: '封面评分',
+      COVER_GEN: '封面生成',
+      COVER_CHECK: '封面质检',
+      WECHAT_DRAFT: '发送草稿'
     };
 
     function setActiveModule(moduleId) {
@@ -2486,9 +2534,16 @@
       const map = {
         main: '主任务',
         health: '健康检查',
+        manual_url: '链接直跑',
         manual: '手动任务'
       };
       return map[type] || type || '-';
+    }
+
+    function formatStepName(name) {
+      const raw = String(name || '').trim();
+      if (!raw) return '-';
+      return STEP_LABELS[raw] || raw;
     }
 
     function formatMaintenancePhase(value) {
@@ -2832,8 +2887,14 @@
       const coverageText = Number(costs.unsupported_calls_count || 0) > 0
         ? `已覆盖 ${formatNumber(costs.supported_calls_count || 0)} 次，未覆盖 ${formatNumber(costs.unsupported_calls_count || 0)} 次`
         : `已覆盖 ${formatNumber(costs.supported_calls_count || 0)} 次`;
-      const mockNotice = Number(bucket.excluded_mock_calls_count || 0) > 0
-        ? `<div class="storage-inline-note">已排除 ${formatNumber(bucket.excluded_mock_calls_count)} 次本地 mock / 估算调用，避免把未真实执行的模型数据算进概览。</div>`
+      const excludedMock = Number(bucket.excluded_mock_calls_count || 0);
+      const excludedInvalid = Number(bucket.excluded_invalid_calls_count || 0);
+      const excludedTotal = Number(bucket.excluded_non_real_calls_count || 0);
+      const excludedParts = [];
+      if (excludedMock > 0) excludedParts.push(`mock ${formatNumber(excludedMock)} 次`);
+      if (excludedInvalid > 0) excludedParts.push(`空模型记录 ${formatNumber(excludedInvalid)} 次`);
+      const mockNotice = excludedTotal > 0
+        ? `<div class="storage-inline-note">已排除 ${formatNumber(excludedTotal)} 次非真实计费记录${excludedParts.length ? `（${escapeHtml(excludedParts.join('，'))}）` : ''}，避免把未真实执行或无法归因的调用算进概览。</div>`
         : '';
       const pricingWarning = Array.isArray(pricing.unsupported_models) && pricing.unsupported_models.length
         ? `<div class="token-warning-note">以下模型当前未纳入内置价格表，暂不计入费用：${escapeHtml(pricing.unsupported_models.join('、'))}</div>`
@@ -3176,7 +3237,7 @@
             return `
             <article id="${anchorId}" class="step-item ${statusClass(step.status)}${currentClass}">
               <div class="step-head">
-                <div class="step-title">${escapeHtml(step.name || '-')}</div>
+                <div class="step-title">${escapeHtml(formatStepName(step.name))}</div>
                 <span class="detail-badge ${statusClass(step.status)}">${escapeHtml(STATUS_LABELS[step.status] || step.status || '-')}</span>
               </div>
               <div class="step-meta">
@@ -3212,7 +3273,7 @@
               </div>
               <div class="run-badges">
                 <span class="detail-badge ${statusClass(run.status)}">${escapeHtml(STATUS_LABELS[run.status] || run.status || '-')}</span>
-                <span class="detail-badge">${escapeHtml((run.run_type || '-').toUpperCase())}</span>
+                <span class="detail-badge">${escapeHtml(formatRunType(run.run_type))}</span>
                 <span class="detail-badge">${escapeHtml(run.trigger_source || 'unknown')}</span>
               </div>
             </div>
@@ -3242,7 +3303,7 @@
               <div class="step-tools">
                 <span class="step-tool-label">快速定位</span>
                 ${currentStepIndex >= 0 ? `<button type="button" class="step-jump" onclick="jumpToStep('step-${slugifyStep(steps[currentStepIndex].name)}-${currentStepIndex}')">当前步骤</button>` : ''}
-                ${failedSteps.map(item => `<button type="button" class="step-jump warn" onclick="jumpToStep('${item.anchorId}')">失败: ${escapeHtml(item.step.name || '-')}</button>`).join('')}
+                ${failedSteps.map(item => `<button type="button" class="step-jump warn" onclick="jumpToStep('${item.anchorId}')">失败: ${escapeHtml(formatStepName(item.step.name))}</button>`).join('')}
               </div>
               <div class="steps-list">${stepCards}</div>
             </section>
@@ -3309,7 +3370,7 @@
       const type = document.getElementById('runsTypeFilter')?.value || '';
       const sortOrder = document.getElementById('runsSortOrder')?.value || 'time_desc';
       const filtered = runsCache.filter(run => {
-        const matchesKeyword = !keyword || [run.id, run.article_title, run.failed_step].some(value =>
+        const matchesKeyword = !keyword || [run.id, run.article_title, run.failed_step, formatStepName(run.failed_step)].some(value =>
           String(value || '').toLowerCase().includes(keyword)
         );
         const matchesStatus = !status || run.status === status;
@@ -3384,7 +3445,7 @@
         tr.innerHTML = `
           <td class="small">${formatDateTime(r.started_at)}</td>
           <td><span class="status-chip ${statusClass(r.status)}">${escapeHtml(STATUS_LABELS[r.status] || r.status)}</span></td>
-          <td>${escapeHtml(r.failed_step || '-')}</td>
+          <td>${escapeHtml(formatStepName(r.failed_step))}</td>
           <td><span class="score-pill">${r.quality_score || 0}</span></td>
           <td>${escapeHtml(r.article_title || '-')}</td>
           <td class="runs-reason-cell"><div class="runs-reason-text" title="${escapeHtml(r.selection_reason_preview || '-')}">${escapeHtml(r.selection_reason_preview || '-')}</div></td>
@@ -3411,6 +3472,7 @@
       if (activeRun && activeTriggerRunId !== activeRun.id) {
         startTriggerProgressPolling(activeRun.id);
       }
+      setStopButtonDisabled(!activeRun && !activeTriggerRunId);
       if (!activeRun && !activeTriggerRunId) {
         setTriggerProgressContent('');
       }
@@ -3534,7 +3596,7 @@
       const activeBlock = active ? `
         <section class="source-live-banner">
           <div class="source-live-head">
-            <div class="source-live-title">SOURCE_MAINTENANCE 正在执行</div>
+            <div class="source-live-title">${escapeHtml(formatStepName('SOURCE_MAINTENANCE'))} 正在执行</div>
             <span class="status-chip status-running">Run ${escapeHtml((active.run_id || '').slice(0, 8) || '-')}</span>
           </div>
           <div class="source-live-meta">
@@ -3681,10 +3743,15 @@
     }
 
     function setTriggerButtonsDisabled(disabled) {
-      ['triggerHealthBtn', 'triggerMainBtn'].forEach(id => {
+      ['triggerHealthBtn', 'triggerMainBtn', 'triggerUrlBtn'].forEach(id => {
         const button = document.getElementById(id);
         if (button) button.disabled = !!disabled;
       });
+    }
+
+    function setStopButtonDisabled(disabled) {
+      const button = document.getElementById('stopCurrentRunBtn');
+      if (button) button.disabled = !!disabled;
     }
 
     function setActionStatus(message, type = 'loading') {
@@ -3749,8 +3816,8 @@
       const lastFinishedStep = [...steps].reverse().find(step => step.status === 'success');
       const maintenanceActivity = getMaintenanceActivity(runningStep);
       const currentStep = maintenanceActivity
-        ? `${runningStep?.name || 'SOURCE_MAINTENANCE'} · ${maintenanceActivity}`
-        : (runningStep?.name || failedStep?.name || lastFinishedStep?.name || '等待启动');
+        ? `${formatStepName(runningStep?.name || 'SOURCE_MAINTENANCE')} · ${maintenanceActivity}`
+        : formatStepName(runningStep?.name || failedStep?.name || lastFinishedStep?.name || '等待启动');
       const completedCount = expectedSteps.filter(name => {
         const status = stepMap.get(name)?.status;
         return status === 'success' || status === 'failed';
@@ -3769,7 +3836,7 @@
         return `
           <div class="trigger-step-row ${state}">
             <div class="trigger-step-index">${index + 1}</div>
-            <div class="trigger-step-name">${escapeHtml(stepName)}</div>
+            <div class="trigger-step-name">${escapeHtml(formatStepName(stepName))}</div>
             <span class="status-chip ${statusClass(status)}">${escapeHtml(STATUS_LABELS[status] || status)}</span>
           </div>
         `;
@@ -3825,20 +3892,27 @@
           const detailNode = document.getElementById('runDetail');
           if (detailNode) detailNode.innerHTML = renderRunDetail(data);
         }
-        if (activeModule === 'module-sources' || runningStep?.name === 'SOURCE_MAINTENANCE') {
+        if (activeModule === 'module-sources') {
           await loadSourceHealth();
         }
         if (!TERMINAL_RUN_STATUSES.has(data?.run?.status)) {
+          setStopButtonDisabled(false);
           triggerProgressTimer = setTimeout(() => pollTriggerProgress(runId), 2000);
         } else {
           stopTriggerProgressPolling();
+          activeTriggerRunId = '';
+          setStopButtonDisabled(true);
           await loadRuns();
           await loadToken();
-          setTriggerStatus(`任务已结束，Run ID: ${runId}，最终状态：${STATUS_LABELS[data.run.status] || data.run.status}`, data.run.status === 'failed' ? 'error' : 'success');
+          setTriggerStatus(
+            `任务已结束，Run ID: ${runId}，最终状态：${STATUS_LABELS[data.run.status] || data.run.status}`,
+            data.run.status === 'failed' ? 'error' : 'success'
+          );
         }
         return data;
       } catch (err) {
         stopTriggerProgressPolling();
+        setStopButtonDisabled(false);
         const message = err && err.message ? err.message : String(err || '未知错误');
         setTriggerProgressContent(renderRunDetailState(`进度获取失败：${message}`, 'error', runId));
         console.error('pollTriggerProgress failed', runId, err);
@@ -3945,6 +4019,7 @@
       const label = type === 'health' ? '健康检查' : '主任务';
       try {
         setTriggerButtonsDisabled(true);
+        setStopButtonDisabled(true);
         if (button) button.textContent = `正在执行 ${label}...`;
         setTriggerStatus(`正在提交${label}，系统会在后台启动任务并实时展示当前进展。`, 'loading');
         setTriggerProgressContent('');
@@ -3959,7 +4034,59 @@
         alert(`${label}触发失败：${err.message}`);
       } finally {
         setTriggerButtonsDisabled(false);
+        setStopButtonDisabled(!activeTriggerRunId);
         if (button) button.textContent = originalText || (type === 'health' ? '执行 08:30 健康检查' : '执行 09:00 主任务');
+      }
+    }
+
+    async function triggerUrlRun(button = null) {
+      const input = document.getElementById('manualSourceUrl');
+      const sourceUrl = String(input?.value || '').trim();
+      if (!sourceUrl) {
+        alert('请先输入文章链接');
+        return;
+      }
+      const originalText = button ? button.textContent : '';
+      try {
+        setTriggerButtonsDisabled(true);
+        setStopButtonDisabled(true);
+        if (button) button.textContent = '正在处理指定链接...';
+        setTriggerStatus('正在提交指定链接，系统会跳过热点抓取和选题筛选，直接处理这篇文章。', 'loading');
+        setTriggerProgressContent('');
+        const resp = await api('/api/runs/trigger', 'POST', {
+          run_type: 'manual_url',
+          trigger_source: 'manual-url-ui',
+          source_url: sourceUrl
+        });
+        setTriggerStatus(`已成功提交链接直跑任务，Run ID：${resp.run_id}。当前进展会在下方自动刷新。`, 'success');
+        const actionInput = document.getElementById('action_run_id');
+        if (actionInput) actionInput.value = resp.run_id;
+        await loadRuns();
+        startTriggerProgressPolling(resp.run_id);
+      } catch (err) {
+        setTriggerStatus(`链接直跑触发失败：${err.message}`, 'error');
+        alert(`链接直跑触发失败：${err.message}`);
+      } finally {
+        setTriggerButtonsDisabled(false);
+        setStopButtonDisabled(!activeTriggerRunId);
+        if (button) button.textContent = originalText || '处理指定链接并发送公众号';
+      }
+    }
+
+    async function stopCurrentRun() {
+      const activeRun = runsCache.find(run => ['pending', 'running'].includes(run.status));
+      const runId = String(activeTriggerRunId || activeRun?.id || '').trim();
+      if (!runId) {
+        alert('当前没有可停止的运行任务');
+        return;
+      }
+      setStopButtonDisabled(true);
+      try {
+        const resp = await api(`/api/runs/${runId}/cancel`, 'POST');
+        setTriggerStatus(`已请求停止任务，Run ID：${runId}。${resp.message || ''}`, 'loading');
+      } catch (err) {
+        setTriggerStatus(`停止任务失败：${err.message}`, 'error');
+        setStopButtonDisabled(false);
       }
     }
 

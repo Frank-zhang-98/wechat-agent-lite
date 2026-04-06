@@ -55,6 +55,26 @@ class TitleGenerationServiceTests(unittest.TestCase):
         self.assertEqual(plan.article_title, "多代理系统正在重塑软件开发：实战解读")
         self.assertEqual(plan.wechat_title, "多代理系统重塑开发")
 
+    def test_long_wechat_title_is_compacted_instead_of_hard_cut(self) -> None:
+        plan = self.service.generate(
+            run_id="run-3",
+            topic={
+                "title": "Proxy-Pointer RAG：不用向量库，如何实现98.7%准确率",
+                "summary": "A hybrid retrieval design that combines structure-aware precision with vector efficiency.",
+            },
+            fact_pack={"key_points": ["The article compares PageIndex with Proxy-Pointer RAG."]},
+            fact_compress={"one_sentence_summary": "Proxy-Pointer RAG 试图在准确率与规模成本之间取得平衡。", "numbers": ["98.7%"]},
+            content_type="technical_walkthrough",
+            llm=FakeLLM(
+                '{"article_title":"Proxy-Pointer RAG：如何融合结构感知精度与向量检索效率？","wechat_title":"Proxy-Pointer RAG：不用向量库，如何实现98.7%准确率","reason":"保留核心数字信息"}'
+            ),
+        )
+
+        self.assertEqual(plan.source, "llm")
+        self.assertEqual(plan.wechat_title, "Proxy-Pointer RAG：如何实现98.7%准确率")
+        self.assertLessEqual(len(plan.wechat_title), 32)
+        self.assertNotEqual(plan.wechat_title, "Proxy-Pointer RAG：不用向量库，如何实现98.7")
+
 
 if __name__ == "__main__":
     unittest.main()
