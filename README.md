@@ -4,6 +4,10 @@ Lightweight daily article automation for WeChat Official Accounts.
 
 微信公众号日更自动化系统，适合小规格服务器部署与日常运维。
 
+## Latest Release Notes
+
+- 2026-04-06: [发布说明（中文）](./docs/release-notes-2026-04-06.md)
+
 ## Overview
 
 This project provides:
